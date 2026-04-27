@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Fusion design system base styles */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    color: #191919;
+    font-family: 'Roboto', system-ui, -apple-system, BlinkMacSystemFont,
+      'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button {
+    font-family: inherit;
+  }
+}
+
+@layer components {
+  /* SingleStore/Fusion button primitives */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 h-8 px-4 rounded-sm text-sm font-bold
+           transition-colors select-none whitespace-nowrap;
+    font-family: 'Lato', 'Roboto', sans-serif;
+  }
+  .btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+  .btn-icon {
+    @apply inline-flex items-center justify-center size-8 rounded-sm transition-colors text-text-mid hover:bg-neutral-3;
+  }
+  .btn-primary {
+    @apply bg-brand-9 text-white hover:bg-brand-10;
+  }
+  .btn-secondary {
+    @apply bg-white border border-border-default text-text-mid hover:bg-neutral-2;
+  }
+  .btn-ghost {
+    @apply text-text-mid hover:bg-neutral-3;
+  }
+  .btn-brand-ghost {
+    @apply text-brand-9 hover:bg-brand-2;
+  }
+}
+
+/* Scrollbar polish */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6d6d6;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
