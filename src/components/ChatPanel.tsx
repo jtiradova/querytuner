@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
+import { PostVeAnalysisMessage } from './PostVeAnalysisMessage';
+import { VeSqlGuidanceMessage } from './VeSqlGuidanceMessage';
+import { QueryTunerEmptyIntroMessage } from './QueryTunerEmptyIntroMessage';
 import { useChat, AGENTS } from '../contexts/ChatContext';
 import type {
   AgentId,
@@ -21,30 +24,137 @@ const DEFAULT_OPTIMIZE_QUERY = `WHERE customer_id IN (
  * Fixed width column (360px) mounted to the right of the main page content
  * when `chat.isOpen`. Shows agent + user messages and a bottom composer.
  */
+function isWhatToDoInSqlQuestion(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
+  return t.includes('what to do in sql');
+}
+
+function newChatMessageId(prefix: string): string {
+  const r =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : String(Math.random()).slice(2, 10);
+  return `${prefix}-${Date.now()}-${r}`;
+}
+
 export function ChatPanel() {
   const chat = useChat();
   const navigate = useNavigate();
+  const location = useLocation();
   const [composerValue, setComposerValue] = useState('');
   const [fileDragOver, setFileDragOver] = useState(false);
+  const [jsonPasteHint, setJsonPasteHint] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const flow = chat.emptyEditorOptimize;
   const inEmptyOptimizeSql =
-    flow && (flow.phase === 'greeting' || flow.phase === 'awaiting-drop' || flow.phase === 'file-ready');
+    flow &&
+    (flow.phase === 'greeting' ||
+      flow.phase === 'awaiting-drop' ||
+      flow.phase === 'file-ready');
+  const introOnlyThread =
+    chat.messages.length === 1 &&
+    chat.messages[0]?.kind === 'query-tuner-empty-intro';
+  const welcomeAloneThread =
+    chat.messages.length === 1 &&
+    chat.messages[0]?.kind === 'query-tuner-welcome';
+  const inProfileComposer =
+    Boolean(inEmptyOptimizeSql) || introOnlyThread || welcomeAloneThread;
+  // Center vertically only for empty state + Ask SingleStore welcome (Flow 2).
+  // Flow 1C empty-editor intro stays top-aligned.
+  const verticallyCenterThread =
+    chat.messages.length === 0 || welcomeAloneThread;
+  const onVisualExplainRoute =
+    location.pathname.includes('/editor/visual-explain');
   const canSendPastedOrComposer =
-    inEmptyOptimizeSql &&
-    (Boolean(flow?.file) || composerValue.trim().length > 0);
+    (inProfileComposer &&
+      (Boolean(flow?.file) || composerValue.trim().length > 0)) ||
+    (onVisualExplainRoute && composerValue.trim().length > 0);
 
   useEffect(() => {
     if (!listRef.current) return;
+    if (verticallyCenterThread) return;
+    const head = chat.messages[0];
+    const scrollThreadToTop =
+      chat.messages.length === 1 &&
+      (head?.kind === 'post-ve-analysis' ||
+        head?.kind === 'query-tuner-empty-intro');
+    if (scrollThreadToTop) {
+      listRef.current.scrollTop = 0;
+      return;
+    }
     listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [chat.messages.length, flow?.phase]);
+  }, [
+    chat.messages,
+    flow?.phase,
+    verticallyCenterThread,
+  ]);
+
+  useEffect(() => {
+    if (!chat.isOpen) setJsonPasteHint(false);
+  }, [chat.isOpen]);
 
   if (!chat.isOpen) return null;
 
   const onProfileFile = (f: File | undefined) => {
     if (f) chat.stageJsonProfileFile(f);
+  };
+
+  function looksLikeJsonProfile(text: string): boolean {
+    const t = text.trim();
+    if (!t.startsWith('{') && !t.startsWith('[')) return false;
+    try {
+      const v = JSON.parse(t) as unknown;
+      return typeof v === 'object' && v !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  const submitComposer = () => {
+    if (!canSendPastedOrComposer) return;
+    if (flow?.file) {
+      chat.sendStagedProfileFile('/editor/visual-explain');
+      setComposerValue('');
+      setJsonPasteHint(false);
+      return;
+    }
+    const raw = composerValue.trim();
+    if (raw && looksLikeJsonProfile(raw)) {
+      chat.sendPastedJsonProfile(raw, '/editor/visual-explain');
+      setComposerValue('');
+      setJsonPasteHint(false);
+      return;
+    }
+    if (onVisualExplainRoute && raw) {
+      if (isWhatToDoInSqlQuestion(raw)) {
+        chat.pushMessages([
+          { id: newChatMessageId('u-vsql'), kind: 'user-text', text: raw },
+          { id: newChatMessageId('a-vsql'), kind: 've-sql-guidance' },
+        ]);
+      } else {
+        chat.pushMessages([
+          { id: newChatMessageId('u-ve'), kind: 'user-text', text: raw },
+          {
+            id: newChatMessageId('a-ve'),
+            kind: 'agent-text',
+            text: 'Ask “What to do in SQL?” for step-by-step diagnostic queries you can run to investigate queuing and load.',
+          },
+        ]);
+      }
+      setComposerValue('');
+      setJsonPasteHint(false);
+      queueMicrotask(() => composerTextareaRef.current?.focus());
+      return;
+    }
+    const q = raw || DEFAULT_OPTIMIZE_QUERY;
+    chat.requestOptimizeConfirm({
+      entry: 'editor',
+      query: q,
+    });
+    setComposerValue('');
+    setJsonPasteHint(false);
   };
 
   return (
@@ -54,7 +164,11 @@ export function ChatPanel() {
       }`}
       aria-label="Ask SingleStore"
       onDragOver={(e) => {
-        if (flow?.phase !== 'awaiting-drop' && flow?.phase !== 'greeting') {
+        if (
+          flow?.phase !== 'awaiting-drop' &&
+          flow?.phase !== 'greeting' &&
+          flow?.phase !== 'file-ready'
+        ) {
           return;
         }
         e.preventDefault();
@@ -66,7 +180,11 @@ export function ChatPanel() {
         setFileDragOver(false);
       }}
       onDrop={(e) => {
-        if (flow?.phase !== 'awaiting-drop' && flow?.phase !== 'greeting') {
+        if (
+          flow?.phase !== 'awaiting-drop' &&
+          flow?.phase !== 'greeting' &&
+          flow?.phase !== 'file-ready'
+        ) {
           return;
         }
         e.preventDefault();
@@ -131,17 +249,6 @@ export function ChatPanel() {
         </div>
       </header>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/json,.json"
-        className="hidden"
-        onChange={(e) => {
-          onProfileFile(e.target.files?.[0]);
-          e.target.value = '';
-        }}
-      />
-
       {fileDragOver && flow && (
         <div
           className="absolute inset-0 z-10 m-2 rounded-lg border-2 border-dashed border-brand-8 bg-brand-1/90 flex items-center justify-center pointer-events-none"
@@ -165,11 +272,23 @@ export function ChatPanel() {
       ) : (
         <div
           ref={listRef}
-          className="flex-1 overflow-y-auto min-h-0"
+          className="relative flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-hidden"
         >
+          {verticallyCenterThread ? (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute left-1/2 top-1/2 z-0 h-[309px] w-[309px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ECD6FF]"
+              style={{
+                filter: 'blur(177px)',
+                willChange: 'filter',
+              }}
+            />
+          ) : null}
           <div
-            className={`flex flex-col gap-4 px-3 py-4 ${
-              chat.expanded ? 'max-w-[680px] w-full mx-auto' : ''
+            className={`relative z-10 flex flex-col gap-4 px-3 py-4 w-full ${
+              chat.expanded ? 'max-w-[680px] mx-auto' : ''
+            } ${
+              verticallyCenterThread ? 'flex-1 min-h-0 justify-center' : ''
             }`}
           >
             {chat.messages.length === 0 ? (
@@ -180,7 +299,7 @@ export function ChatPanel() {
                   key={m.id}
                   message={m}
                   onOpenLink={(href, messageId) => {
-                    if (messageId) chat.markResultViewed(messageId);
+                    if (messageId) chat.prepareChatForVisualExplain(messageId);
                     navigate(href);
                   }}
                   onYesRun={() => chat.confirmRun('/editor/visual-explain')}
@@ -191,9 +310,6 @@ export function ChatPanel() {
                     m.kind === 'empty-optimize-greeting' ? flow?.phase : undefined
                   }
                   onSimulateFileSelect={() => chat.simulateJsonProfileFile()}
-                  onPickWelcomeOption={(label) =>
-                    chat.selectQueryTunerOption(label)
-                  }
                 />
               ))
             )}
@@ -218,46 +334,97 @@ export function ChatPanel() {
             chat.expanded ? 'max-w-[680px] w-full mx-auto' : ''
           }`}
         >
-          {flow?.file && (
-            <div className="flex items-center gap-2 px-2 pt-2 pb-1 border-b border-border-subtle/80">
-              <div className="inline-flex items-center gap-1.5 h-7 px-2 rounded-sm border border-border-default bg-surface-2 text-xs text-text-primary max-w-full">
-                <Icon name="file-code" className="text-[12px] shrink-0" />
-                <span
-                  className="truncate"
-                  style={{ fontFamily: 'Roboto, sans-serif' }}
-                  title={flow.file.name}
-                >
-                  {flow.file.name}
-                </span>
+          {flow?.file ? (
+            /* Figma 1016-87229: chip + hint inside composer (no large textarea) */
+            <div className="flex flex-col gap-2 px-4 pt-4 pb-2">
+              <div className="flex items-stretch rounded border border-border-default bg-surface-2 p-1 gap-0">
+                <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1">
+                  <Icon
+                    name="file-code"
+                    className="text-[12px] shrink-0 text-text-mid"
+                    aria-hidden
+                  />
+                  <span
+                    className="truncate text-sm font-normal text-text-primary"
+                    style={{ fontFamily: 'Roboto, sans-serif' }}
+                    title={flow.file.name}
+                  >
+                    {flow.file.name}
+                  </span>
+                </div>
                 <button
                   type="button"
-                  className="btn-icon"
+                  className="btn-icon shrink-0 self-start"
                   aria-label="Remove file"
                   title="Remove file"
-                  onClick={() => chat.clearStagedProfileFile()}
+                  onClick={() => {
+                    chat.clearStagedProfileFile();
+                    setJsonPasteHint(false);
+                  }}
                 >
                   <Icon name="xmark" className="text-[12px]" />
                 </button>
               </div>
+              <p
+                className="text-sm font-normal text-text-secondary m-0"
+                style={{ fontFamily: 'Roboto, sans-serif' }}
+              >
+                Press Enter to analyze
+              </p>
             </div>
+          ) : (
+            <>
+              {jsonPasteHint && inProfileComposer && (
+                <p
+                  className="text-xs text-text-secondary px-3 pt-2 pb-0"
+                  style={{ fontFamily: 'Roboto, sans-serif' }}
+                >
+                  Paste your Query Debug Profile JSON in the box below, then tap
+                  Send.
+                </p>
+              )}
+              <textarea
+                ref={composerTextareaRef}
+                value={composerValue}
+                onChange={(e) => setComposerValue(e.target.value)}
+                placeholder={
+                  inProfileComposer && jsonPasteHint
+                    ? 'Paste Query Debug Profile JSON here…'
+                    : onVisualExplainRoute
+                      ? 'Try: What to do in SQL? — then press Send or Enter'
+                      : 'Paste your SQL query or upload a JSON file...'
+                }
+                rows={2}
+                className="resize-none bg-transparent outline-none text-sm text-text-primary placeholder:text-text-low px-3 pt-2 pb-1 leading-relaxed w-full"
+                style={{ fontFamily: 'Roboto, sans-serif' }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' || e.shiftKey) return;
+                  e.preventDefault();
+                  submitComposer();
+                }}
+              />
+              {jsonPasteHint && inProfileComposer && (
+                <p
+                  className="text-xs text-text-secondary px-3 pb-1 pt-0"
+                  style={{ fontFamily: 'Roboto, sans-serif' }}
+                >
+                  Press Enter to analyze
+                </p>
+              )}
+            </>
           )}
-          <textarea
-            value={composerValue}
-            onChange={(e) => setComposerValue(e.target.value)}
-            placeholder="Paste your SQL query or describe your issue..."
-            rows={2}
-            className="resize-none bg-transparent outline-none text-sm text-text-primary placeholder:text-text-low px-3 pt-2 pb-1 leading-relaxed w-full"
-            style={{ fontFamily: 'Roboto, sans-serif' }}
-          />
           <div className="flex items-center justify-between px-2 pb-2 pt-1">
             <div className="flex items-center gap-1">
               <button
                 type="button"
                 className="btn-icon"
-                aria-label="Attach .json file"
-                title="Attach .json file"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!inEmptyOptimizeSql}
+                aria-label="Attach sample Query Debug Profile"
+                title="Attach sample Query Debug Profile"
+                onClick={() => {
+                  chat.simulateJsonProfileFile();
+                  setJsonPasteHint(false);
+                }}
+                disabled={!inProfileComposer}
               >
                 <Icon name="paperclip" className="text-[12px]" />
               </button>
@@ -270,21 +437,7 @@ export function ChatPanel() {
               type="button"
               className="flex items-center justify-center size-7 rounded-sm bg-brand-9 text-white hover:bg-brand-10 disabled:opacity-40 disabled:cursor-not-allowed"
               disabled={!canSendPastedOrComposer}
-              onClick={() => {
-                if (flow?.file) {
-                  // Flow 2: skip the "Yes, run the query" step. The agent
-                  // already has a debug profile so it goes straight into
-                  // analysis (running -> thoughts -> View in Visual Explain).
-                  chat.sendStagedProfileFile('/editor/visual-explain');
-                  setComposerValue('');
-                  return;
-                }
-                // Flow 1 fallback: user pasted a query into the bottom
-                // composer instead of uploading a file.
-                const q = composerValue.trim() || DEFAULT_OPTIMIZE_QUERY;
-                chat.startOptimize({ query: q });
-                setComposerValue('');
-              }}
+              onClick={submitComposer}
               aria-label="Send"
             >
               <Icon name="send" className="text-[12px]" />
@@ -324,8 +477,6 @@ type MessageBubbleProps = {
   onSimulateFileSelect: () => void;
   /** Flow 1: user accepts running the query for profiling. */
   onYesRun: () => void;
-  /** Flow 3: user picked a Query Tuner welcome-screen option. */
-  onPickWelcomeOption: (label: string) => void;
 };
 
 function MessageBubble({
@@ -335,11 +486,12 @@ function MessageBubble({
   emptyOptimizePhase,
   onSimulateFileSelect,
   onYesRun,
-  onPickWelcomeOption,
 }: MessageBubbleProps) {
   switch (message.kind) {
     case 'query-tuner-welcome':
-      return <QueryTunerWelcomeMessage onPick={onPickWelcomeOption} />;
+      return <QueryTunerWelcomeMessage />;
+    case 'query-tuner-empty-intro':
+      return <QueryTunerEmptyIntroMessage />;
     case 'empty-optimize-greeting':
       return (
         <EmptyOptimizeGreetingMessage
@@ -393,12 +545,29 @@ function MessageBubble({
     case 'agent-result':
       return (
         <div className="flex flex-col gap-2">
-          <p
-            className="text-sm text-text-primary leading-relaxed"
+          <div
+            className={
+              message.textEmphasis
+                ? 'flex flex-col gap-3 text-sm text-text-primary leading-relaxed'
+                : undefined
+            }
             style={{ fontFamily: 'Roboto, sans-serif' }}
           >
-            {message.text}
-          </p>
+            <p
+              className={
+                message.textEmphasis
+                  ? 'text-sm text-text-primary leading-relaxed'
+                  : 'text-sm text-text-primary leading-relaxed whitespace-pre-line'
+              }
+            >
+              {message.text}
+            </p>
+            {message.textEmphasis ? (
+              <p className="text-sm font-bold text-text-primary leading-relaxed">
+                {message.textEmphasis}
+              </p>
+            ) : null}
+          </div>
           {message.linkLabel && message.linkHref && !message.linkViewed && (
             <button
               type="button"
@@ -407,11 +576,17 @@ function MessageBubble({
               style={{ fontFamily: 'Roboto, sans-serif' }}
             >
               <span>{message.linkLabel}</span>
-              <Icon name="arrow-right" className="text-[12px]" />
+              {message.linkLabel !== 'Confirm' ? (
+                <Icon name="arrow-right" className="text-[12px]" />
+              ) : null}
             </button>
           )}
         </div>
       );
+    case 've-sql-guidance':
+      return <VeSqlGuidanceMessage />;
+    case 'post-ve-analysis':
+      return <PostVeAnalysisMessage />;
     case 'agent-analysis':
       return (
         <div className="flex flex-col gap-2">
@@ -544,51 +719,80 @@ function EmptyOptimizeGreetingMessage({
   );
 }
 
-const WELCOME_OPTIONS = [
-  'Optimize query',
-  'Explain execution plan',
-  'Suggest missing index',
-  'Debug a query file',
+const WELCOME_CAPABILITY_ROWS: ReadonlyArray<{
+  title: string;
+  description: string;
+  icon: string;
+}> = [
+  {
+    title: 'Profile a query',
+    description:
+      'paste a SQL SELECT or upload a JSON file to debug profile automatically.',
+    icon: 'search',
+  },
+  {
+    title: 'Analyze bottlenecks',
+    description:
+      'identify repartitions, broadcasts, skew, spills, and more.',
+    icon: 'network',
+  },
+  {
+    title: 'Recommend schema changes',
+    description:
+      'shard keys, sort keys, projections, hash indexes, reference tables.',
+    icon: 'table',
+  },
+  {
+    title: 'Generate & validate DDL',
+    description: 'produce ready-to-run DDL with safety checks.',
+    icon: 'check-circle',
+  },
 ];
 
-function QueryTunerWelcomeMessage({
-  onPick,
-}: {
-  onPick: (label: string) => void;
-}) {
+/** Flow 2 — Ask SingleStore welcome (Figma 1016-89777). Static text only; no buttons. */
+function QueryTunerWelcomeMessage() {
   return (
     <div
-      className="flex flex-col gap-8 self-stretch w-full max-w-full py-6"
+      className="flex flex-col gap-8 self-stretch w-full max-w-full py-1"
       style={{ fontFamily: 'Roboto, sans-serif' }}
     >
-      <div className="flex flex-col items-center gap-4 text-center">
-        <div className="flex items-center gap-3">
-          <Icon name="code" className="text-[18px] text-text-primary" />
-          <span
-            className="text-[20px] font-medium text-text-primary leading-tight"
-            style={{ fontFamily: 'Roboto, sans-serif' }}
-          >
-            Query Tuner
-          </span>
+      <div className="flex flex-col gap-6 w-full">
+        <div className="flex flex-col gap-4 items-center text-center w-full">
+          <div className="flex items-center justify-center gap-3">
+            <Icon name="code" className="text-[18px] text-text-primary shrink-0" />
+            <h2
+              className="text-xl font-medium text-text-primary leading-tight tracking-wide"
+              style={{ fontFamily: 'Roboto, sans-serif' }}
+            >
+              Performance Tuning
+            </h2>
+          </div>
+          <p className="text-base font-normal text-text-secondary leading-normal tracking-wide m-0 max-w-[320px]">
+            I can help you analyze and optimize your SingleStore queries.
+            Here&apos;s what I can do for you:
+          </p>
         </div>
-        <p className="text-sm text-text-secondary leading-relaxed">
-          I can help you optimize queries, analyze execution plans, and improve
-          database performance.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-2.5">
-        {WELCOME_OPTIONS.map((label) => (
-          <button
-            key={label}
-            type="button"
-            onClick={() => onPick(label)}
-            className="flex h-9 items-center px-3.5 rounded-sm border border-dashed border-border-hover text-sm font-bold text-text-mid hover:bg-neutral-2 hover:border-brand-9 hover:text-brand-9 transition-colors"
-            style={{ fontFamily: 'Lato, sans-serif' }}
-          >
-            {label}
-          </button>
-        ))}
+        <ul className="flex flex-col gap-4 w-full list-none p-0 m-0 items-stretch text-left">
+          {WELCOME_CAPABILITY_ROWS.map((row) => (
+            <li
+              key={row.title}
+              className="flex items-start gap-3 text-sm leading-relaxed tracking-wide text-left"
+            >
+              <Icon
+                name={row.icon}
+                className="text-[16px] shrink-0 text-text-secondary mt-0.5"
+                aria-hidden
+              />
+              <span className="min-w-0">
+                <span className="font-bold text-text-primary">{row.title}</span>
+                <span className="font-normal text-text-secondary">
+                  {' '}
+                  - {row.description}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
@@ -596,25 +800,27 @@ function QueryTunerWelcomeMessage({
 
 type UserProfileMsg = Extract<ChatMessage, { kind: 'user-profile-file' }>;
 
+/** Figma 1016-87348 — compact user-side profile chip (no JSON preview). */
+function formatProfileChipLine(fileName: string, sizeLabel: string): string {
+  const size = sizeLabel.replace(/\s*[—–]\s*debug file\s*$/i, '').trim();
+  return `${fileName} - ${size}`;
+}
+
 function UserProfileFileMessage({ message }: { message: UserProfileMsg }) {
+  const line = formatProfileChipLine(message.fileName, message.sizeLabel);
   return (
-    <div className="self-stretch w-full max-w-full rounded-md border border-border-subtle bg-white overflow-hidden">
+    <div className="self-end flex w-full justify-end">
       <div
-        className="px-3 py-2 bg-surface-2 border-b border-border-subtle text-xs font-medium text-text-secondary flex items-center justify-between gap-2"
+        className="inline-flex max-w-full items-start gap-2.5 rounded border border-border-default bg-surface-2 p-2.5 text-sm font-normal leading-normal text-text-primary tracking-wide"
         style={{ fontFamily: 'Roboto, sans-serif' }}
       >
-        <span className="flex items-center gap-2 min-w-0">
-          <Icon name="file-code" className="text-[12px] shrink-0" />
-          <span className="truncate">{message.fileName}</span>
-        </span>
-        <span className="shrink-0 text-text-mid text-[11px]">{message.sizeLabel}</span>
+        <Icon
+          name="file-code"
+          className="text-[14px] shrink-0 text-text-primary mt-0.5"
+          aria-hidden
+        />
+        <span className="min-w-0 break-words">{line}</span>
       </div>
-      <pre
-        className="px-3 py-2 text-[12px] overflow-x-auto max-h-56 overflow-y-auto text-text-primary"
-        style={{ fontFamily: 'Inconsolata, monospace', lineHeight: '18px' }}
-      >
-        {message.preview}
-      </pre>
     </div>
   );
 }

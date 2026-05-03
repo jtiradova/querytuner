@@ -5,8 +5,12 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // Keep the prototype URL stable for demos / Figma handoff.
-    port: 5183,
-    strictPort: true,
+    // Expose on LAN interfaces and align with the printed Network URL; also
+    // avoids some localhost vs 127.0.0.1 / IPv6 edge cases.
+    host: true,
+    // Standard Vite port; if busy, Vite picks the next free port — check the
+    // terminal for the exact "Local:" URL after `npm run dev`.
+    port: 5173,
+    strictPort: false,
   },
 })

@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   AlignJustify,
+  BarChart3,
   ArrowRight,
   ArrowUpFromLine,
   ArrowUpRight,
@@ -59,6 +60,7 @@ import {
   UserPlus,
   Wand2,
   Workflow,
+  Wrench,
   X,
 } from 'lucide-react';
 
@@ -85,6 +87,8 @@ const ICONS: IconMap = {
   cube: Box,
   'chart-line': LineChart,
   chart: LineChart,
+  'bar-chart': BarChart3,
+  tools: Wrench,
   gear: Settings,
   settings: Settings,
 

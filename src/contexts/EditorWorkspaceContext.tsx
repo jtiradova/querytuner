@@ -16,6 +16,8 @@ export type EditorWorkspaceSnapshot = {
   activeTabId: string;
   /** SQL tab ids the user has clicked in the editor area → show demo query. */
   editorRevealed: Record<string, boolean>;
+  /** Per SQL tab: pasted / “Open in SQL Editor” content (each tab keeps its own). */
+  tabSql: Record<string, string>;
   untitledSeq: number;
 };
 
@@ -35,6 +37,7 @@ function defaultHome(): EditorWorkspaceSnapshot {
     tabs: homeTabs(),
     activeTabId: 'my-files',
     editorRevealed: {},
+    tabSql: {},
     untitledSeq: 1,
   };
 }
@@ -57,6 +60,7 @@ function defaultSqlSession(): EditorWorkspaceSnapshot {
     ],
     activeTabId: 'untitled-1',
     editorRevealed: {},
+    tabSql: {},
     untitledSeq: 1,
   };
 }
@@ -72,6 +76,7 @@ function readPersisted(): EditorWorkspaceSnapshot | null {
       tabs: p.tabs,
       activeTabId: p.activeTabId,
       editorRevealed: p.editorRevealed ?? {},
+      tabSql: p.tabSql && typeof p.tabSql === 'object' ? p.tabSql : {},
       untitledSeq: typeof p.untitledSeq === 'number' ? p.untitledSeq : 1,
     };
   } catch {
@@ -85,6 +90,8 @@ type EditorWorkspaceValue = {
   startSqlSession: () => void;
   setActiveTabId: (id: string) => void;
   addSqlTab: () => void;
+  /** New SQL tab with initial editor text (e.g. chat “Open in SQL Editor”). */
+  addSqlTabWithSql: (sql: string) => void;
   closeTab: (id: string) => void;
   revealEditorContent: (sqlTabId: string) => void;
   isEditorRevealed: (sqlTabId: string) => boolean;
@@ -147,6 +154,40 @@ export function EditorWorkspaceProvider({ children }: { children: ReactNode }) {
         activeTabId: newId,
         untitledSeq: seq,
         editorRevealed: { ...s.editorRevealed },
+        tabSql: { ...s.tabSql },
+      };
+    });
+  }, []);
+
+  const addSqlTabWithSql = useCallback((sql: string) => {
+    const text = sql.trim();
+    if (!text) return;
+    setSnapshot((s) => {
+      const seq = s.untitledSeq + 1;
+      const newId = `untitled-${seq}`;
+      const tab: Tab = {
+        id: newId,
+        label: `untitled query-${seq}.sql`,
+        icon: 'file-code',
+        closeable: true,
+      };
+      let tabs = [...s.tabs];
+      if (!tabs.some((t) => t.id === 'my-files')) {
+        tabs.unshift({
+          id: 'my-files',
+          label: 'My files',
+          icon: 'folder-open',
+          closeable: false,
+        });
+      }
+      tabs = [...tabs, tab];
+      return {
+        ...s,
+        tabs,
+        activeTabId: newId,
+        untitledSeq: seq,
+        editorRevealed: { ...s.editorRevealed, [newId]: true },
+        tabSql: { ...s.tabSql, [newId]: text },
       };
     });
   }, []);
@@ -156,13 +197,14 @@ export function EditorWorkspaceProvider({ children }: { children: ReactNode }) {
     setSnapshot((s) => {
       const tabs = s.tabs.filter((t) => t.id !== id);
       const { [id]: _removed, ...editorRevealed } = s.editorRevealed;
+      const { [id]: _sqlDrop, ...tabSql } = s.tabSql;
       let activeTabId = s.activeTabId;
       if (activeTabId === id) {
         const sqlTabs = tabs.filter((t) => t.id !== 'my-files');
         activeTabId =
           sqlTabs.length > 0 ? sqlTabs[sqlTabs.length - 1].id : 'my-files';
       }
-      return { ...s, tabs, activeTabId, editorRevealed };
+      return { ...s, tabs, activeTabId, editorRevealed, tabSql };
     });
   }, []);
 
@@ -186,6 +228,7 @@ export function EditorWorkspaceProvider({ children }: { children: ReactNode }) {
       startSqlSession,
       setActiveTabId,
       addSqlTab,
+      addSqlTabWithSql,
       closeTab,
       revealEditorContent,
       isEditorRevealed,
@@ -196,6 +239,7 @@ export function EditorWorkspaceProvider({ children }: { children: ReactNode }) {
       startSqlSession,
       setActiveTabId,
       addSqlTab,
+      addSqlTabWithSql,
       closeTab,
       revealEditorContent,
       isEditorRevealed,

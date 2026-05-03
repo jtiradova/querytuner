@@ -5,6 +5,7 @@ import { AppShell } from '../components/AppShell';
 import { TabBar } from '../components/TabBar';
 import {
   STORAGE_KEY_PREVIEW_REWRITE,
+  STORAGE_KEY_VE_CHAT_SQL_PASTE,
   useChat,
 } from '../contexts/ChatContext';
 import { useEditorWorkspace } from '../contexts/EditorWorkspaceContext';
@@ -125,6 +126,11 @@ export function QueryTunerPage() {
     startSqlSession,
   } = useEditorWorkspace();
 
+  const activeId = snapshot.activeTabId;
+  const tabSqlForActive =
+    activeId !== 'my-files' ? snapshot.tabSql[activeId] : undefined;
+  const hasTabSql = Boolean(tabSqlForActive?.trim());
+
   const locState = location.state as {
     previewRewrite?: string;
   } | null;
@@ -134,11 +140,24 @@ export function QueryTunerPage() {
   if (statePreview) {
     previewRewrite = statePreview;
   } else if (locState == null) {
-    const stored =
+    const vePaste =
       typeof window !== 'undefined'
-        ? window.sessionStorage.getItem(STORAGE_KEY_PREVIEW_REWRITE)?.trim()
+        ? window.sessionStorage.getItem(STORAGE_KEY_VE_CHAT_SQL_PASTE)?.trim()
         : '';
-    previewRewrite = stored || undefined;
+    if (vePaste) {
+      try {
+        window.sessionStorage.removeItem(STORAGE_KEY_VE_CHAT_SQL_PASTE);
+      } catch {
+        /* ignore */
+      }
+      previewRewrite = vePaste;
+    } else {
+      const stored =
+        typeof window !== 'undefined'
+          ? window.sessionStorage.getItem(STORAGE_KEY_PREVIEW_REWRITE)?.trim()
+          : '';
+      previewRewrite = stored || undefined;
+    }
   } else {
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem(STORAGE_KEY_PREVIEW_REWRITE);
@@ -147,7 +166,6 @@ export function QueryTunerPage() {
   }
 
   const chat = useChat();
-  const activeId = snapshot.activeTabId;
 
   const hasSqlTab = snapshot.tabs.some((t) => t.id !== 'my-files');
   useLayoutEffect(() => {
@@ -164,7 +182,8 @@ export function QueryTunerPage() {
 
   const sqlTabRevealed =
     activeId !== 'my-files' && snapshot.editorRevealed[activeId] === true;
-  const showFilledEditor = Boolean(previewRewrite) || sqlTabRevealed;
+  const showFilledEditor =
+    Boolean(previewRewrite?.trim()) || sqlTabRevealed || hasTabSql;
 
   /**
    * Flow 3 — bottom panel state.
@@ -180,22 +199,33 @@ export function QueryTunerPage() {
   );
   const [activeLogTab, setActiveLogTab] = useState<string>('message-logs');
 
+  /** Extra result tabs (SELECT* FROM, …) only after Run with a visible query. */
+  const expandResultTabs = hasRun && showFilledEditor;
+
   useEffect(() => {
     setHasRun(readRunState(activeId));
     setActiveLogTab('message-logs');
   }, [activeId]);
 
   useEffect(() => {
+    if (!expandResultTabs) {
+      setActiveLogTab('message-logs');
+    }
+  }, [expandResultTabs]);
+
+  useEffect(() => {
     writeRunState(activeId, hasRun);
   }, [activeId, hasRun]);
 
-  const queryLines = useMemo<QueryLine[]>(
-    () =>
-      previewRewrite && previewRewrite.trim().length > 0
-        ? linesFromSql(previewRewrite)
-        : DEFAULT_QUERY_LINES,
-    [previewRewrite],
-  );
+  const queryLines = useMemo<QueryLine[]>(() => {
+    if (hasTabSql && tabSqlForActive) {
+      return linesFromSql(tabSqlForActive);
+    }
+    if (previewRewrite && previewRewrite.trim().length > 0) {
+      return linesFromSql(previewRewrite);
+    }
+    return DEFAULT_QUERY_LINES;
+  }, [hasTabSql, tabSqlForActive, previewRewrite]);
 
   const onAddTab = () => {
     addSqlTab();
@@ -247,7 +277,8 @@ export function QueryTunerPage() {
               className="btn btn-brand-ghost gap-1.5"
               onClick={() => {
                 if (showFilledEditor) {
-                  chat.startOptimize({
+                  chat.requestOptimizeConfirm({
+                    entry: 'editor',
                     query: SELECTED_SUBQUERY_TEXT,
                   });
                 } else {
@@ -332,65 +363,57 @@ export function QueryTunerPage() {
                 </div>
               </>
             ) : (
-              <button
-                type="button"
-                onClick={activateSqlEditor}
-                className="flex font-mono text-sm h-full w-full text-left cursor-text hover:bg-neutral-3/30 transition-colors"
-                aria-label="Click to load sample query in the editor"
-              >
-                <div
-                  className="py-4 pl-4 pr-3 text-right text-[#777582] select-none"
-                  style={{ fontFamily: 'Inconsolata, monospace' }}
+              <div className="flex flex-col flex-1 min-h-0 font-mono text-sm">
+                <button
+                  type="button"
+                  onClick={activateSqlEditor}
+                  className="flex flex-1 min-h-0 w-full text-left cursor-text hover:bg-neutral-3/20 transition-colors"
+                  aria-label="Insert sample query in the editor"
                 >
-                  <div className="leading-[20px]">1</div>
-                </div>
-                <div
-                  className="py-4 flex-1 min-w-0"
-                  style={{ fontFamily: 'Inconsolata, monospace' }}
-                >
-                  <div className="leading-[20px] pr-4 whitespace-pre text-text-secondary text-sm">
-                    <span className="inline-block w-[2px] h-[14px] align-middle bg-text-primary animate-pulse" />
-                    <span className="ml-2" style={{ fontFamily: 'Roboto, sans-serif' }}>
-                      Click here to insert the sample query…
+                  <div
+                    className="py-4 pl-4 pr-3 text-right text-[#777582] select-none shrink-0"
+                    style={{ fontFamily: 'Inconsolata, monospace' }}
+                  >
+                    <div className="leading-[20px]">1</div>
+                  </div>
+                  <div className="py-4 flex-1 min-w-0 flex items-start gap-2 min-h-0">
+                    <div
+                      className="leading-[20px] shrink-0"
+                      style={{ fontFamily: 'Inconsolata, monospace' }}
+                    >
+                      <span className="inline-block w-[2px] h-[14px] align-middle bg-text-primary animate-pulse" />
+                    </div>
+                    <span
+                      className="text-sm text-text-secondary leading-[20px] pr-4 pt-px"
+                      style={{ fontFamily: 'Roboto, sans-serif' }}
+                    >
+                      Click here to insert query
                     </span>
                   </div>
-                </div>
-              </button>
+                </button>
+              </div>
             )}
           </div>
 
           {/* Results / Message Logs */}
           <div className="border-t border-border-subtle bg-white flex flex-col min-h-[240px]">
             <ResultsTabBar
-              hasRun={hasRun}
+              expandResultTabs={expandResultTabs}
               activeTab={activeLogTab}
               onSelect={setActiveLogTab}
             />
 
-            {hasRun ? (
+            {hasRun && showFilledEditor ? (
               <MessageLogsTable
                 onOptimize={(query) =>
-                  chat.startMessageLogOptimize({ query })
+                  chat.requestOptimizeConfirm({
+                    entry: 'message-log',
+                    query,
+                  })
                 }
               />
             ) : (
-              <div className="flex-1 flex items-center justify-center px-4 py-10">
-                <div className="flex flex-col items-center gap-3 max-w-lg text-center">
-                  <div className="relative w-20 h-20 rounded-full bg-brand-2 flex items-center justify-center">
-                    <Icon
-                      name="diagram-project"
-                      className="text-[32px] text-brand-9"
-                    />
-                  </div>
-                  <p className="text-sm text-[#777582] leading-relaxed">
-                    Select one or more queries and hit{' '}
-                    <span className="text-text-primary">⌘ + Return</span> to run
-                    them.
-                    <br />
-                    Results are limited to 300 rows.
-                  </p>
-                </div>
-              </div>
+              <MessageLogsEmptyPanel />
             )}
           </div>
         </div>
@@ -417,16 +440,37 @@ const RESULT_TABS: ResultsTab[] = [
   { id: 'select-1', label: 'SELECT 1', closable: true },
 ];
 
+function MessageLogsEmptyPanel() {
+  return (
+    <div
+      className="flex-1 flex items-center justify-center px-4 py-10"
+      aria-label="Message logs empty state"
+    >
+      <div className="flex flex-col items-center gap-3 max-w-lg text-center">
+        <div className="relative w-20 h-20 rounded-full bg-brand-2 flex items-center justify-center">
+          <Icon name="diagram-project" className="text-[32px] text-brand-9" />
+        </div>
+        <p className="text-sm text-[#777582] leading-relaxed">
+          Select one or more queries and hit{' '}
+          <span className="text-text-primary">⌘ + Return</span> to run them.
+          <br />
+          Results are limited to 300 rows.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ResultsTabBar({
-  hasRun,
+  expandResultTabs,
   activeTab,
   onSelect,
 }: {
-  hasRun: boolean;
+  expandResultTabs: boolean;
   activeTab: string;
   onSelect: (id: string) => void;
 }) {
-  const tabs = hasRun ? RESULT_TABS : RESULT_TABS.slice(0, 1);
+  const tabs = expandResultTabs ? RESULT_TABS : RESULT_TABS.slice(0, 1);
   return (
     <div className="flex items-center bg-surface-2 border-b border-border-subtle">
       {tabs.map((tab) => {

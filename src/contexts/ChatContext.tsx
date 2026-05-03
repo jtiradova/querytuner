@@ -8,12 +8,16 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
+import { flushSync } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 
 const STORAGE_KEY_OPEN = 'chat-open';
 const STORAGE_KEY_MESSAGES = 'chat-messages';
 const STORAGE_KEY_AGENT = 'chat-agent';
 /** Fallback when `location.state` is lost (hard refresh, router edge cases). */
 export const STORAGE_KEY_PREVIEW_REWRITE = 'editor-preview-rewrite';
+/** One-shot SQL from Visual Explain “Open in SQL Editor” (consumed on Query Tuner load). */
+export const STORAGE_KEY_VE_CHAT_SQL_PASTE = 'editor-ve-chat-sql-paste';
 
 export type AgentId = 'query-tuner' | 'data-migration' | 'sqlr-assistant';
 
@@ -41,9 +45,9 @@ export const AGENTS: AgentOption[] = [
   },
   {
     id: 'query-tuner',
-    label: 'Query Tuner',
+    label: 'Performance Tuning',
     icon: 'code',
-    tooltip: 'Optimize your SQL queries\nfor better performance.',
+    tooltip: 'Profile queries, analyze bottlenecks,\nand tune SingleStore performance.',
   },
 ];
 
@@ -56,6 +60,33 @@ function readJSON<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+const LEGACY_AGENT_RESULT_PROFILE_LINK = 'Confirm Profile in Visual Explain';
+const LEGACY_AGENT_RESULT_PROFILE_BODY =
+  'To profile this query and find optimization opportunities, I need to generate a debug profile. This might briefly affect active workloads.\n\nConfirm to generate this profile and visualize in Visual Explain to continue to next steps';
+
+/** Normalize persisted threads after copy / CTA label changes. */
+function migrateStoredChatMessages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.map((m) => {
+    if (m.kind !== 'agent-result') return m;
+    const linkPatch =
+      m.linkLabel === LEGACY_AGENT_RESULT_PROFILE_LINK
+        ? ({ linkLabel: 'Confirm' as const } satisfies Partial<ChatMessage>)
+        : {};
+    const bodyPatch =
+      m.text === LEGACY_AGENT_RESULT_PROFILE_BODY
+        ? ({
+            text: 'A query profile must be generated to show optimization opportunities in Visual Explain. This takes about 30 seconds and may cause a brief spike in query execution.',
+            textEmphasis:
+              'Confirm to generate this profile and continue to Visual Explain.',
+          } satisfies Partial<ChatMessage>)
+        : {};
+    if (Object.keys(linkPatch).length === 0 && Object.keys(bodyPatch).length === 0) {
+      return m;
+    }
+    return { ...m, ...linkPatch, ...bodyPatch };
+  });
 }
 
 /**
@@ -79,6 +110,8 @@ export type ChatMessage =
       id: string;
       kind: 'agent-result';
       text: string;
+      /** Optional second paragraph (e.g. bold call-to-action below `text`). */
+      textEmphasis?: string;
       linkLabel?: string;
       linkHref?: string;
       /**
@@ -135,11 +168,15 @@ export type ChatMessage =
    */
   | { id: string; kind: 'empty-optimize-greeting' }
   /**
-   * Shown when the user opens chat from the top-bar "Ask SingleStore"
-   * button on a brand-new SQL tab. Renders the Query Tuner hero (title +
-   * subtitle) followed by 4 dashed option pills.
+   * Shown when the user opens chat from the top-bar "Ask SingleStore" button.
+   * Performance Tuning welcome copy (Figma 1016-89777) — static text only.
    */
   | { id: string; kind: 'query-tuner-welcome' }
+  /**
+   * Flow 1C — Optimize clicked while the SQL editor is empty: assistant intro
+   * (Figma 1016-87077) before the user pastes SQL or attaches a profile JSON.
+   */
+  | { id: string; kind: 'query-tuner-empty-intro' }
   /**
    * After the user sends an uploaded profile JSON, we keep a copy in-thread.
    */
@@ -151,7 +188,13 @@ export type ChatMessage =
       sizeLabel: string;
       /** Truncated pretty JSON for the white message card */
       preview: string;
-    };
+    }
+  /**
+   * Visual Explain chat: guided SQL steps (user asks “What to do in SQL?”).
+   */
+  | { id: string; kind: 've-sql-guidance' }
+  /** Full chat narrative after opening Visual Explain (Figma 1016-86425). */
+  | { id: string; kind: 'post-ve-analysis' };
 
 export type EmptyEditorOptimizePhase = 'greeting' | 'awaiting-drop' | 'file-ready';
 
@@ -182,6 +225,14 @@ function withoutEmptyOptimizeIntro(msgs: ChatMessage[]): ChatMessage[] {
   });
 }
 
+export type OptimizeConfirmRequest = {
+  entry: 'editor' | 'message-log';
+  query: string;
+  highlightLines?: number[];
+  title?: string;
+  viewExplainHref?: string;
+};
+
 type ChatContextValue = {
   isOpen: boolean;
   messages: ChatMessage[];
@@ -189,17 +240,28 @@ type ChatContextValue = {
   close: () => void;
   toggle: () => void;
   clear: () => void;
-  /** Opens the panel (if needed) and appends an "optimize this query" prompt. */
+  /**
+   * SQL editor / message-log path: opens the optimize confirmation modal first.
+   * On confirm, runs the profiling / analysis sequence. Visual Explain Optimize
+   * control should open the chat panel via `open()` instead (no modal).
+   */
+  requestOptimizeConfirm: (args: OptimizeConfirmRequest) => void;
+  /** Pending optimize confirmation, or null when the modal is closed. */
+  optimizeConfirmRequest: OptimizeConfirmRequest | null;
+  cancelOptimizeConfirm: () => void;
+  /**
+   * Modal “Confirm” on the way to Visual Explain: keeps the current thread,
+   * shows “Profiling…” for ~2s, then appends the post–VE analysis message.
+   */
+  confirmOptimizeConfirm: () => void;
+  /** @deprecated Prefer requestOptimizeConfirm — still used by legacy threads. */
   startOptimize: (args: {
     query: string;
     highlightLines?: number[];
     title?: string;
   }) => void;
   /**
-   * Message-log entry point: query has already been executed, so the chat
-   * skips the permission step. Shows a read-only query card, an
-   * "Analysing your query…" spinner, then the 3-issue analysis with a
-   * "View profile in Visual Explain" link.
+   * Message-log entry point after modal confirm — prefer requestOptimizeConfirm.
    */
   startMessageLogOptimize: (args: {
     query: string;
@@ -214,6 +276,14 @@ type ChatContextValue = {
   pushMessages: (msgs: ChatMessage[]) => void;
   /** Flip `linkViewed` on an agent-result message. No-op if not found. */
   markResultViewed: (id: string) => void;
+  /**
+   * When the user follows a Visual Explain result link (e.g. “Confirm” or
+   * “View profile in Visual Explain”): mark the CTA consumed, append a brief
+   * “Profiling…” spinner at the end of the thread (~2s), then replace it with
+   * the post–VE analysis appended after the existing messages (full context
+   * preserved).
+   */
+  prepareChatForVisualExplain: (agentResultMessageId: string) => void;
   /** Flip `applyApplied` on an agent-analysis message. No-op if not found. */
   markApplyApplied: (id: string) => void;
   /**
@@ -228,15 +298,10 @@ type ChatContextValue = {
    */
   startEmptyEditorOptimize: () => void;
   /**
-   * Top-bar "Ask SingleStore" entry point. Opens chat with the Query Tuner
-   * welcome screen (title + 4 option pills).
+   * Top-bar "Ask SingleStore" entry point. Opens chat with the Performance
+   * Tuning welcome copy (Figma 1016-89777).
    */
   startQueryTunerWelcome: () => void;
-  /**
-   * User picked one of the welcome-screen option pills. Pushes their choice as
-   * a user-text bubble and shows the empty-optimize greeting (paste / upload).
-   */
-  selectQueryTunerOption: (label: string) => void;
   /** Stage a JSON profile file (drop / picker). */
   stageJsonProfileFile: (file: File) => void;
   /** Simulate selecting a JSON profile file (no picker). */
@@ -249,6 +314,11 @@ type ChatContextValue = {
    * No-op if no file is staged.
    */
   sendStagedProfileFile: (viewExplainHref?: string) => void;
+  /**
+   * Send JSON pasted into the composer (no OS file picker). Validates JSON
+   * then runs the same profile analysis path as `sendStagedProfileFile`.
+   */
+  sendPastedJsonProfile: (jsonText: string, viewExplainHref?: string) => void;
   /** Stops the empty-editor UI state but keeps messages. */
   dismissEmptyOptimizeFlow: () => void;
   emptyEditorOptimize: EmptyEditorOptimizeFlow | null;
@@ -260,6 +330,11 @@ type ChatContextValue = {
   view: 'thread' | 'history';
   /** Toggle / set side-panel view. */
   setView: (v: 'thread' | 'history') => void;
+  /**
+   * Visual Explain header Optimize: opens the chat panel with the full
+   * post–Visual Explain analysis (no confirmation modal).
+   */
+  openVisualExplainOptimizeChat: () => void;
   /** When true, the chat panel takes the entire content area instead of the
    *  fixed 360px right column. */
   expanded: boolean;
@@ -270,13 +345,15 @@ type ChatContextValue = {
 const ChatContext = createContext<ChatContextValue | null>(null);
 
 export function ChatProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [isOpen, setOpen] = useState<boolean>(() =>
     readJSON<boolean>(STORAGE_KEY_OPEN, false),
   );
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const stored = readJSON<ChatMessage[]>(STORAGE_KEY_MESSAGES, []);
     // Drop any transient "running" spinners that would never resolve after reload.
-    return stored.filter((m) => m.kind !== 'agent-running');
+    const filtered = stored.filter((m) => m.kind !== 'agent-running');
+    return migrateStoredChatMessages(filtered);
   });
   const [emptyEditorOptimize, setEmptyEditorOptimize] =
     useState<EmptyEditorOptimizeFlow | null>(null);
@@ -286,7 +363,38 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<'thread' | 'history'>('thread');
   const [expanded, setExpanded] = useState(false);
   const toggleExpanded = useCallback(() => setExpanded((e) => !e), []);
+  const [optimizeConfirmRequest, setOptimizeConfirmRequest] =
+    useState<OptimizeConfirmRequest | null>(null);
   const runTimers = useRef<number[]>([]);
+  /** Pending Visual Explain handoff: remove profiling spinner + show analysis. */
+  const veProfilingTimerRef = useRef<number | null>(null);
+  /**
+   * Cancel the Visual Explain profiling timeout and drop any orphaned
+   * `ve-profiling-*` row so we never leave a stuck spinner if the timer was
+   * cleared elsewhere (e.g. `runTimers` flush) without running the callback.
+   */
+  const clearVeProfilingTimer = useCallback(() => {
+    const t = veProfilingTimerRef.current;
+    if (t !== null) {
+      window.clearTimeout(t);
+      veProfilingTimerRef.current = null;
+      runTimers.current = runTimers.current.filter((id) => id !== t);
+    }
+    setMessages((prev) =>
+      prev.some((m) => m.id.startsWith('ve-profiling-'))
+        ? prev.filter((m) => !m.id.startsWith('ve-profiling-'))
+        : prev,
+    );
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (veProfilingTimerRef.current !== null) {
+        window.clearTimeout(veProfilingTimerRef.current);
+        veProfilingTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -308,11 +416,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const clear = useCallback(() => {
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
+    clearVeProfilingTimer();
     setMessages([]);
     setEmptyEditorOptimize(null);
+    setOptimizeConfirmRequest(null);
     setView('thread');
     setExpanded(false);
-  }, []);
+  }, [clearVeProfilingTimer]);
 
   const open = useCallback(() => setOpen(true), []);
   /**
@@ -323,25 +433,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setOpen(false);
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
+    clearVeProfilingTimer();
     setMessages([]);
     setEmptyEditorOptimize(null);
+    setOptimizeConfirmRequest(null);
     setView('thread');
     setExpanded(false);
-  }, []);
+  }, [clearVeProfilingTimer]);
   const toggle = useCallback(
     () =>
       setOpen((v) => {
         if (v) {
           runTimers.current.forEach((t) => window.clearTimeout(t));
           runTimers.current = [];
+          clearVeProfilingTimer();
           setMessages([]);
           setEmptyEditorOptimize(null);
+          setOptimizeConfirmRequest(null);
           setView('thread');
           setExpanded(false);
         }
         return !v;
       }),
-    [],
+    [clearVeProfilingTimer],
   );
 
   const startEmptyEditorOptimize = useCallback(() => {
@@ -350,44 +464,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // the new empty-editor / file-upload flow.
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
+    clearVeProfilingTimer();
     setOpen(true);
     setView('thread');
     setEmptyEditorOptimize({ phase: 'greeting' });
     setMessages([
-      { id: `u-opt-${Date.now()}`, kind: 'user-text', text: 'debug JSON file' },
-      { id: `greet-${Date.now()}`, kind: 'empty-optimize-greeting' },
+      {
+        id: `qt-empty-${Date.now()}`,
+        kind: 'query-tuner-empty-intro',
+      },
     ]);
-  }, []);
+  }, [clearVeProfilingTimer]);
 
   const startQueryTunerWelcome = useCallback(() => {
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
+    clearVeProfilingTimer();
     setOpen(true);
     setView('thread');
+    // Do not attach the empty-editor JSON flow here — that left `inProfileComposer`
+    // true and broke the Visual Explain composer (send stayed disabled after the
+    // first message). Welcome is only `query-tuner-welcome` + optional chat.
     setEmptyEditorOptimize(null);
     setMessages([
       { id: `welcome-${Date.now()}`, kind: 'query-tuner-welcome' },
     ]);
-  }, []);
-
-  const selectQueryTunerOption = useCallback<
-    ChatContextValue['selectQueryTunerOption']
-  >((label) => {
-    runTimers.current.forEach((t) => window.clearTimeout(t));
-    runTimers.current = [];
-    setEmptyEditorOptimize({ phase: 'greeting' });
-    setMessages((prev) => {
-      // Remove the welcome screen — we replace it with the user's choice
-      // and the assistant's follow-up question.
-      const filtered = prev.filter((m) => m.kind !== 'query-tuner-welcome');
-      const now = Date.now();
-      return [
-        ...filtered,
-        { id: `u-opt-${now}`, kind: 'user-text', text: label },
-        { id: `greet-${now}`, kind: 'empty-optimize-greeting' },
-      ];
-    });
-  }, []);
+  }, [clearVeProfilingTimer]);
 
   const dismissEmptyOptimizeFlow = useCallback(() => {
     setEmptyEditorOptimize(null);
@@ -421,7 +523,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         {
           id: runId,
           kind: 'agent-running',
-          label: 'Reading your debug profile…',
+          label: 'Reading your profile…',
         },
       ]);
       const t = window.setTimeout(() => {
@@ -429,20 +531,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           const next = prev.filter((m) => m.kind !== 'agent-running');
           const now = Date.now();
           next.push({
-            id: `thoughts-${now}`,
-            kind: 'debug-thoughts',
-            bullets: [
-              'ColumnStore Scan on "orders" — 72% of total time (12.4M rows scanned)',
-              'IN-list with correlated subquery prevents shard pruning',
-              'Hash join build side is materialised in full before probe',
-            ],
-          });
-          next.push({
             id: `res-pro-${now}`,
             kind: 'agent-result',
             text:
-              'I parsed the profiler output and lined it up with your query plan.',
-            linkLabel: 'View profile in Visual Explain',
+              'A query profile must be generated to show optimization opportunities in Visual Explain. This takes about 30 seconds and may cause a brief spike in query execution.',
+            textEmphasis:
+              'Confirm to generate this profile and continue to Visual Explain.',
+            linkLabel: 'Confirm',
             linkHref: viewExplainHref,
           });
           return next;
@@ -468,6 +563,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     },
     [emptyEditorOptimize, runJsonProfileAnalysis],
   );
+
+  const sendPastedJsonProfile = useCallback<
+    ChatContextValue['sendPastedJsonProfile']
+  >((raw, viewExplainHref) => {
+    const t = raw.trim();
+    if (!t) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(t);
+    } catch {
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return;
+    const pretty = JSON.stringify(parsed, null, 2);
+    const bytes = new Blob([pretty]).size;
+    const kb = bytes / 1024;
+    const sizeBit =
+      kb < 1024
+        ? `${Math.max(1, Math.round(kb))} KB`
+        : `${(kb / 1024).toFixed(1)} MB`;
+    runJsonProfileAnalysis({
+      fileName: 'query_debag_export.json',
+      text: pretty,
+      sizeLabel: `${sizeBit} — debug file`,
+      viewExplainHref: viewExplainHref ?? '/editor/visual-explain',
+    });
+  }, [runJsonProfileAnalysis]);
 
   const stageJsonProfileFile = useCallback(
     (file: File) => {
@@ -522,7 +644,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const simulateJsonProfileFile = useCallback(() => {
     // Figma-driven prototype: simulate a selected file without opening the OS picker.
     const demo = {
-      name: 'query_debug_export.json',
+      name: 'query_debag_export.json',
       sizeLabel: '48 KB — debug file',
       text: JSON.stringify(
         {
@@ -569,58 +691,154 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const beginMessageLogProfilingFlow = useCallback(
+    (args: {
+      query: string;
+      highlightLines?: number[];
+      title?: string;
+      viewExplainHref?: string;
+    }) => {
+      const { query, highlightLines, title, viewExplainHref } = args;
+      runTimers.current.forEach((t) => window.clearTimeout(t));
+      runTimers.current = [];
+      clearVeProfilingTimer();
+      setOpen(true);
+      setView('thread');
+      setEmptyEditorOptimize(null);
+
+      const now = Date.now();
+      const cardId = `card-${now}`;
+      const runId = `run-mlog-${now}`;
+      setMessages([
+        {
+          id: cardId,
+          kind: 'agent-query-card',
+          title: title ?? 'Optimize query',
+          query,
+          highlightLines,
+        },
+        {
+          id: runId,
+          kind: 'agent-running',
+          label: 'Analysing your query…',
+        },
+      ]);
+
+      const t = window.setTimeout(() => {
+        setMessages((prev) => {
+          const next = prev.filter((m) => m.kind !== 'agent-running');
+          const tNow = Date.now();
+          next.push({
+            id: `thoughts-${tNow}`,
+            kind: 'debug-thoughts',
+            bullets: [
+              'ColumnStore Scan on "orders" — 72% of total time (12.4M rows scanned)',
+              'IN-list with correlated subquery prevents shard pruning',
+              'Hash join build side is materialised in full before probe',
+            ],
+          });
+          next.push({
+            id: `res-mlog-${tNow}`,
+            kind: 'agent-result',
+            text:
+              'I analyzed the execution profile from your run. Open Visual Explain to see the plan and full recommendations.',
+            linkLabel: 'View profile in Visual Explain',
+            linkHref: viewExplainHref ?? '/editor/visual-explain',
+          });
+          return next;
+        });
+      }, 1600);
+      runTimers.current.push(t);
+    },
+    [clearVeProfilingTimer],
+  );
+
   const startMessageLogOptimize = useCallback<
     ChatContextValue['startMessageLogOptimize']
-  >(({ query, highlightLines, title, viewExplainHref }) => {
+  >((args) => {
+    beginMessageLogProfilingFlow(args);
+  }, [beginMessageLogProfilingFlow]);
+
+  const requestOptimizeConfirm = useCallback<
+    ChatContextValue['requestOptimizeConfirm']
+  >((args) => {
+    setOptimizeConfirmRequest(args);
+  }, []);
+
+  const cancelOptimizeConfirm = useCallback(() => {
+    setOptimizeConfirmRequest(null);
+  }, []);
+
+  const openVisualExplainOptimizeChat = useCallback(() => {
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
-    setOpen(true);
-    setView('thread');
+    clearVeProfilingTimer();
+    setOptimizeConfirmRequest(null);
     setEmptyEditorOptimize(null);
-
-    const now = Date.now();
-    const cardId = `card-${now}`;
-    const runId = `run-mlog-${now}`;
+    setView('thread');
+    setExpanded(false);
+    setOpen(true);
     setMessages([
       {
-        id: cardId,
-        kind: 'agent-query-card',
-        title: title ?? 'Optimize query',
-        query,
-        highlightLines,
-      },
-      {
-        id: runId,
-        kind: 'agent-running',
-        label: 'Analysing your query…',
+        id: `pve-from-ve-${Date.now()}`,
+        kind: 'post-ve-analysis',
       },
     ]);
+  }, [clearVeProfilingTimer]);
 
-    const t = window.setTimeout(() => {
+  const confirmOptimizeConfirm = useCallback(() => {
+    setOptimizeConfirmRequest(null);
+    runTimers.current.forEach((t) => window.clearTimeout(t));
+    runTimers.current = [];
+    clearVeProfilingTimer();
+    setEmptyEditorOptimize(null);
+    setView('thread');
+    setExpanded(false);
+    setOpen(true);
+
+    const profilingId = `ve-profiling-${Date.now()}`;
+    let scheduleProfilingCompletion = false;
+    flushSync(() => {
       setMessages((prev) => {
-        const next = prev.filter((m) => m.kind !== 'agent-running');
-        const tNow = Date.now();
-        next.push({
-          id: `thoughts-${tNow}`,
-          kind: 'debug-thoughts',
-          bullets: [
-            'ColumnStore Scan on "orders" — 72% of total time (12.4M rows scanned)',
-            'IN-list with correlated subquery prevents shard pruning',
-            'Hash join build side is materialised in full before probe',
-          ],
-        });
-        next.push({
-          id: `res-mlog-${tNow}`,
-          kind: 'agent-result',
-          text: 'Found 3 performance issues in your query plan:',
-          linkLabel: 'View profile in Visual Explain',
-          linkHref: viewExplainHref ?? '/editor/visual-explain',
-        });
-        return next;
+        const scrubbed = prev.filter((m) => !m.id.startsWith('ve-profiling-'));
+        if (scrubbed.some((m) => m.kind === 'post-ve-analysis')) {
+          return scrubbed;
+        }
+        scheduleProfilingCompletion = true;
+        return [
+          ...scrubbed,
+          {
+            id: profilingId,
+            kind: 'agent-running',
+            label: 'Profiling…',
+          },
+        ];
       });
-    }, 1600);
-    runTimers.current.push(t);
-  }, []);
+    });
+
+    if (scheduleProfilingCompletion) {
+      const profilingTimer = window.setTimeout(() => {
+        veProfilingTimerRef.current = null;
+        runTimers.current = runTimers.current.filter((id) => id !== profilingTimer);
+        setMessages((p) => {
+          if (!p.some((m) => m.id === profilingId)) return p;
+          const without = p.filter((m) => m.id !== profilingId);
+          if (without.some((m) => m.kind === 'post-ve-analysis')) return without;
+          return [
+            ...without,
+            {
+              id: `pve-ve-landing-${Date.now()}`,
+              kind: 'post-ve-analysis',
+            },
+          ];
+        });
+      }, 2000);
+      veProfilingTimerRef.current = profilingTimer;
+      runTimers.current.push(profilingTimer);
+    }
+
+    navigate('/editor/visual-explain');
+  }, [clearVeProfilingTimer, navigate]);
 
   const confirmRun = useCallback<ChatContextValue['confirmRun']>((viewExplainHref) => {
     // Mark last optimize-prompt as resolved, then append the running spinner.
@@ -649,7 +867,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           kind: 'agent-result',
           text:
             'Query executed in 2.3 seconds. I found a slow table scan on the "orders" table.',
-          linkLabel: 'View Profile in Visual Explain',
+          linkLabel: 'View profile in Visual Explain',
           linkHref: viewExplainHref,
         });
         return next;
@@ -709,6 +927,73 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const prepareChatForVisualExplain = useCallback<
+    ChatContextValue['prepareChatForVisualExplain']
+  >((agentResultMessageId) => {
+    clearVeProfilingTimer();
+    const profilingId = `ve-profiling-${Date.now()}`;
+    let scheduleProfilingCompletion = false;
+    flushSync(() => {
+      setMessages((prev) => {
+        const scrubbed = prev.filter((m) => !m.id.startsWith('ve-profiling-'));
+        const idx = scrubbed.findIndex(
+          (m) => m.id === agentResultMessageId && m.kind === 'agent-result',
+        );
+        if (idx === -1) return scrubbed;
+        const next = [...scrubbed];
+        let resIdx = idx;
+        if (resIdx > 0 && next[resIdx - 1]?.kind === 'debug-thoughts') {
+          next.splice(resIdx - 1, 1);
+          resIdx -= 1;
+        }
+        const hit = next[resIdx];
+        if (!hit || hit.kind !== 'agent-result' || hit.id !== agentResultMessageId) {
+          const j = next.findIndex(
+            (m) => m.id === agentResultMessageId && m.kind === 'agent-result',
+          );
+          if (j === -1) return next;
+          resIdx = j;
+        }
+        const cur = next[resIdx];
+        if (!cur || cur.kind !== 'agent-result') return next;
+        next[resIdx] = { ...cur, linkViewed: true };
+        const alreadyHasPostVe = next
+          .slice(resIdx + 1)
+          .some((m) => m.kind === 'post-ve-analysis');
+        if (!alreadyHasPostVe) {
+          next.push({
+            id: profilingId,
+            kind: 'agent-running',
+            label: 'Profiling…',
+          });
+          scheduleProfilingCompletion = true;
+        }
+        return next;
+      });
+    });
+
+    if (scheduleProfilingCompletion) {
+      const profilingTimer = window.setTimeout(() => {
+        veProfilingTimerRef.current = null;
+        runTimers.current = runTimers.current.filter((id) => id !== profilingTimer);
+        setMessages((prev) => {
+          if (!prev.some((m) => m.id === profilingId)) return prev;
+          const without = prev.filter((m) => m.id !== profilingId);
+          if (without.some((m) => m.kind === 'post-ve-analysis')) return without;
+          return [
+            ...without,
+            {
+              id: `pve-post-${agentResultMessageId}-${Date.now()}`,
+              kind: 'post-ve-analysis',
+            },
+          ];
+        });
+      }, 2000);
+      veProfilingTimerRef.current = profilingTimer;
+      runTimers.current.push(profilingTimer);
+    }
+  }, [clearVeProfilingTimer]);
 
   const markApplyApplied = useCallback<ChatContextValue['markApplyApplied']>(
     (id) => {
@@ -779,22 +1064,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       close,
       toggle,
       clear,
+      requestOptimizeConfirm,
+      optimizeConfirmRequest,
+      cancelOptimizeConfirm,
+      openVisualExplainOptimizeChat,
+      confirmOptimizeConfirm,
       startOptimize,
       startMessageLogOptimize,
       confirmRun,
       declineRun,
       pushMessages,
       markResultViewed,
+      prepareChatForVisualExplain,
       markApplyApplied,
       applyRewriteInEditor,
       emptyEditorOptimize,
       startEmptyEditorOptimize,
       startQueryTunerWelcome,
-      selectQueryTunerOption,
       stageJsonProfileFile,
       simulateJsonProfileFile,
       clearStagedProfileFile,
       sendStagedProfileFile,
+      sendPastedJsonProfile,
       dismissEmptyOptimizeFlow,
       agentId,
       setAgent,
@@ -816,20 +1107,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       close,
       toggle,
       clear,
+      requestOptimizeConfirm,
+      optimizeConfirmRequest,
+      cancelOptimizeConfirm,
+      openVisualExplainOptimizeChat,
+      confirmOptimizeConfirm,
       startOptimize,
       startMessageLogOptimize,
       startEmptyEditorOptimize,
       startQueryTunerWelcome,
-      selectQueryTunerOption,
       stageJsonProfileFile,
       simulateJsonProfileFile,
       clearStagedProfileFile,
       sendStagedProfileFile,
+      sendPastedJsonProfile,
       dismissEmptyOptimizeFlow,
       confirmRun,
       declineRun,
       pushMessages,
       markResultViewed,
+      prepareChatForVisualExplain,
       markApplyApplied,
       applyRewriteInEditor,
     ],

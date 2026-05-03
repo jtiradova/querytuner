@@ -1,35 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { AppShell } from '../components/AppShell';
 import { useChat } from '../contexts/ChatContext';
 
-const SELECTED_SUBQUERY = `WHERE customer_id IN (
-    SELECT id FROM customers
-    WHERE email LIKE '%gmail.com'
-    AND status = 'active'
-)`;
-
 /**
- * The rewrite suggested by the agent: an EXISTS correlated subquery that
- * lets the planner stop after the first match per customer and prune
- * before the columnstore scan happens.
- */
-const OPTIMIZED_QUERY = `SELECT * FROM orders o
-WHERE EXISTS (
-    SELECT 1 FROM customers
-    WHERE id = o.customer_id
-    AND email LIKE '%gmail.com'
-    AND status = 'active'
-)
-AND created_at > '2024-01-01'
-ORDER BY created_at DESC;`;
-
-/**
- * Visual Explain page — renders the execution profile as a plan tree +
- * a right-side Summary / Details side panel.
- *
- * Layout matches the Fusion design system with content adapted to the
- * sample orders/customers query currently shown in the SQL editor.
+ * Visual Explain page — plan tree + Summary / Details (Figma 1016-86425).
+ * Chat content after “Go to Visual Explain” is driven from ChatContext
+ * (Figma 1058-135398) without injecting extra cards here.
  */
 
 type StatBar = {
@@ -118,47 +96,10 @@ const OPERATORS: OperatorRow[] = [
 
 export function VisualExplainPage() {
   const chat = useChat();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<'actual' | 'estimated'>('actual');
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
-
-  // When the user lands on Visual Explain with chat already open AND a run
-  // result already in the thread, (a) mark any "View Profile in Visual Explain"
-  // link as viewed so it's not clickable twice, and (b) push a contextual
-  // analysis that lets them compare the stats to the plan on screen. The
-  // analysis also includes an "Apply in editor" action with the rewritten
-  // query. Both `pushMessages` and `markResultViewed` are id-idempotent.
-  const { isOpen: chatIsOpen, messages, pushMessages, markResultViewed } = chat;
-  const unreadResultId = messages.find(
-    (m) => m.kind === 'agent-result' && !m.linkViewed,
-  )?.id;
-  useEffect(() => {
-    if (!chatIsOpen) return;
-    if (unreadResultId) markResultViewed(unreadResultId);
-  }, [chatIsOpen, unreadResultId, markResultViewed]);
-
-  const hasRunResult = messages.some((m) => m.kind === 'agent-result');
-  useEffect(() => {
-    if (!chatIsOpen || !hasRunResult) return;
-    pushMessages([
-      {
-        id: 've-analysis',
-        kind: 'agent-analysis',
-        title: 'Profile analysis',
-        summary:
-          'I looked at the profile. The ColumnStore Scan on "orders" is doing ~72% of the total time — 12.4M rows scanned against a filter that only keeps ~1,020 customers.',
-        bullets: [
-          { label: 'Bottleneck', value: 'ColumnStore Scan · orders (1.66 s)' },
-          { label: 'Rows scanned', value: '12.4M → 3,222 after join' },
-          { label: 'Memory peak', value: '72 MB on scan, 40 MB on hash' },
-        ],
-        recommendation:
-          'Try rewriting the IN (...) as an EXISTS subquery and add an index on orders.customer_id. The join build side (customers) is already cheap.',
-        applyQuery: OPTIMIZED_QUERY,
-        applyLabel: 'Apply rewrite in editor',
-      },
-    ]);
-  }, [chatIsOpen, hasRunResult, pushMessages]);
 
   return (
     <AppShell askLabel="Ask Singlestore">
@@ -174,16 +115,28 @@ export function VisualExplainPage() {
             PROFILE: profile-sample2.json
           </span>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               className="btn btn-brand-ghost gap-1.5"
-              onClick={() =>
-                chat.startOptimize({ query: SELECTED_SUBQUERY })
-              }
+              onClick={() => {
+                // Flow 3: open Ask SingleStore with full analysis — no modal.
+                chat.openVisualExplainOptimizeChat();
+              }}
             >
               <Icon name="wand-magic-sparkles" className="text-[14px]" />
               <span>Optimize</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary h-9 px-3 text-sm"
+              style={{ fontFamily: 'Roboto, sans-serif' }}
+              onClick={() => {
+                // Preserve workspace tabs + active tab from before VE; do not open a new tab.
+                navigate('/editor/query', { replace: true });
+              }}
+            >
+              Go to SQL editor
             </button>
             <button className="btn-icon" aria-label="Settings">
               <Icon name="settings" className="text-[14px]" />

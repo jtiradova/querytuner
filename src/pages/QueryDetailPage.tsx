@@ -133,7 +133,10 @@ export function QueryDetailPage() {
                 <button
                   type="button"
                   onClick={() =>
-                    chat.startMessageLogOptimize({ query: row.fullQuery })
+                    chat.requestOptimizeConfirm({
+                      entry: 'message-log',
+                      query: row.fullQuery,
+                    })
                   }
                   className="btn btn-brand-ghost gap-1.5"
                 >

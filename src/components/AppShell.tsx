@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { TopNav } from './TopNav';
 import { Sidebar } from './Sidebar';
 import { ChatPanel } from './ChatPanel';
+import { OptimizeConfirmModal } from './OptimizeConfirmModal';
 import { useChat } from '../contexts/ChatContext';
 
 const STORAGE_KEY = 'sidebar-collapsed';
@@ -45,6 +46,12 @@ export function AppShell({ askLabel, children }: AppShellProps) {
         )}
         <ChatPanel />
       </div>
+      <OptimizeConfirmModal
+        open={Boolean(chat.optimizeConfirmRequest)}
+        payload={chat.optimizeConfirmRequest}
+        onCancel={chat.cancelOptimizeConfirm}
+        onConfirm={chat.confirmOptimizeConfirm}
+      />
     </div>
   );
 }
