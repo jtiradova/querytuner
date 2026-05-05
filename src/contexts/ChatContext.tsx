@@ -189,10 +189,6 @@ export type ChatMessage =
       /** Truncated pretty JSON for the white message card */
       preview: string;
     }
-  /**
-   * Visual Explain chat: guided SQL steps (user asks “What to do in SQL?”).
-   */
-  | { id: string; kind: 've-sql-guidance' }
   /** Full chat narrative after opening Visual Explain (Figma 1016-86425). */
   | { id: string; kind: 'post-ve-analysis' };
 
@@ -370,9 +366,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     readJSON<boolean>(STORAGE_KEY_OPEN, false),
   );
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const stored = readJSON<ChatMessage[]>(STORAGE_KEY_MESSAGES, []);
-    // Drop any transient "running" spinners that would never resolve after reload.
-    const filtered = stored.filter((m) => m.kind !== 'agent-running');
+    const stored = readJSON(STORAGE_KEY_MESSAGES, []) as unknown as Array<
+      ChatMessage | { kind: 've-sql-guidance'; id: string }
+    >;
+    // Drop transient spinners and legacy standalone SQL-guidance bubbles (now in post-VE analysis).
+    const filtered = stored.filter(
+      (m) => m.kind !== 'agent-running' && m.kind !== 've-sql-guidance',
+    ) as ChatMessage[];
     return migrateStoredChatMessages(filtered);
   });
   const [emptyEditorOptimize, setEmptyEditorOptimize] =

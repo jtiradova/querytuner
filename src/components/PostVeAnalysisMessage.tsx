@@ -1,3 +1,5 @@
+import { VeSqlDiagnosticSteps } from './VeSqlDiagnosticSteps';
+
 /**
  * Ask SingleStore thread after landing on Visual Explain — full analysis
  * narrative (prototype copy aligned with Query Tuner flows).
@@ -192,6 +194,16 @@ export function PostVeAnalysisMessage() {
           runtime is driven entirely by distributed information_schema fan-out
           latency, not by the query logic.
         </p>
+      </div>
+
+      <div className="pt-4 mt-4 border-t border-border-default">
+        <p
+          className="text-[18px] font-medium text-text-primary mb-3"
+          style={{ fontFamily: 'Roboto, sans-serif' }}
+        >
+          What you can run in SQL
+        </p>
+        <VeSqlDiagnosticSteps />
       </div>
     </div>
   );

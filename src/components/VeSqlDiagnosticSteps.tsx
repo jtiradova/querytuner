@@ -117,9 +117,6 @@ function SqlStepBlock({ step }: { step: Step }) {
   const workspace = useEditorWorkspace();
 
   const openInEditor = useCallback(() => {
-    // Flush so the new SQL tab exists before navigation; otherwise Query Tuner
-    // can run `startSqlSession()` and wipe tabs on a frame where `hasSqlTab`
-    // is still false.
     flushSync(() => {
       workspace.addSqlTabWithSql(step.code);
     });
@@ -200,9 +197,10 @@ function SqlStepBlock({ step }: { step: Step }) {
 }
 
 /**
- * Visual Explain chat: guided SQL for investigating queuing (prototype copy).
+ * Runnable SQL diagnostics (queuing / load). Embedded in the main Visual Explain
+ * analysis card so users do not need a separate “What to do in SQL?” step.
  */
-export function VeSqlGuidanceMessage() {
+export function VeSqlDiagnosticSteps() {
   return (
     <div
       className="flex flex-col gap-5 w-full text-sm text-text-primary"
@@ -231,7 +229,7 @@ export function VeSqlGuidanceMessage() {
       </div>
 
       <p className="leading-relaxed m-0 text-text-primary">
-        Would you like help interpreting the results from any of these queries? 😊
+        Would you like help interpreting the results from any of these queries?
       </p>
 
       <p className="text-xs text-text-secondary leading-relaxed m-0 pt-1 border-t border-border-subtle">

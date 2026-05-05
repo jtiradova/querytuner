@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
 import { SqlTabContextAccentBar, SqlTabContextChipRow } from './SqlTabContextChipRow';
 import { PostVeAnalysisMessage } from './PostVeAnalysisMessage';
-import { VeSqlGuidanceMessage } from './VeSqlGuidanceMessage';
 import { QueryTunerEmptyIntroMessage } from './QueryTunerEmptyIntroMessage';
 import { useChat, AGENTS } from '../contexts/ChatContext';
 import type {
@@ -28,11 +27,6 @@ const DEFAULT_OPTIMIZE_QUERY = `WHERE customer_id IN (
  * when `chat.isOpen`. Shows agent + user messages and a bottom composer.
  * SQL tab context chip appears on Visual Explain and Query Tuner (`/editor/query`).
  */
-function isWhatToDoInSqlQuestion(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
-  return t.includes('what to do in sql');
-}
-
 function newChatMessageId(prefix: string): string {
   const r =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -170,21 +164,14 @@ export function ChatPanel() {
       return;
     }
     if (onVisualExplainRoute && raw) {
-      if (isWhatToDoInSqlQuestion(raw)) {
-        chat.pushMessages([
-          { id: newChatMessageId('u-vsql'), kind: 'user-text', text: raw },
-          { id: newChatMessageId('a-vsql'), kind: 've-sql-guidance' },
-        ]);
-      } else {
-        chat.pushMessages([
-          { id: newChatMessageId('u-ve'), kind: 'user-text', text: raw },
-          {
-            id: newChatMessageId('a-ve'),
-            kind: 'agent-text',
-            text: 'Ask “What to do in SQL?” for step-by-step diagnostic queries you can run to investigate queuing and load.',
-          },
-        ]);
-      }
+      chat.pushMessages([
+        { id: newChatMessageId('u-ve'), kind: 'user-text', text: raw },
+        {
+          id: newChatMessageId('a-ve'),
+          kind: 'agent-text',
+          text: 'The analysis above includes runnable SQL under “What you can run in SQL” for investigating queuing and cluster load.',
+        },
+      ]);
       setComposerValue('');
       setJsonPasteHint(false);
       queueMicrotask(() => composerTextareaRef.current?.focus());
@@ -494,7 +481,7 @@ export function ChatPanel() {
                     inProfileComposer && jsonPasteHint
                       ? 'Paste Query Debug Profile JSON here…'
                       : onVisualExplainRoute
-                        ? 'Try: What to do in SQL? — then press Send or Enter'
+                        ? 'Ask a follow-up question…'
                         : 'Paste your SQL query or upload a JSON file...'
                   }
                   rows={2}
@@ -687,8 +674,6 @@ function MessageBubble({
           )}
         </div>
       );
-    case 've-sql-guidance':
-      return <VeSqlGuidanceMessage />;
     case 'post-ve-analysis':
       return <PostVeAnalysisMessage />;
     case 'agent-analysis':
