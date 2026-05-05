@@ -5,7 +5,8 @@ import { Icon } from './Icon';
 type OptimizeConfirmModalProps = {
   open: boolean;
   payload: OptimizeConfirmRequest | null;
-  onConfirm: () => void;
+  /** Receives the same payload shown in the dialog so confirm never relies on a stale ref. */
+  onConfirm: (request: OptimizeConfirmRequest) => void;
   onCancel: () => void;
 };
 
@@ -87,7 +88,7 @@ export function OptimizeConfirmModal({
             type="button"
             className="btn btn-primary h-9 px-4 text-sm"
             style={{ fontFamily: 'Roboto, sans-serif' }}
-            onClick={onConfirm}
+            onClick={() => onConfirm(payload)}
           >
             Confirm
           </button>

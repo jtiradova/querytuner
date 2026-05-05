@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { AppShell } from '../components/AppShell';
 import { useChat, STORAGE_KEY_PREVIEW_REWRITE } from '../contexts/ChatContext';
+import { STORAGE_KEY_VE_QH_DETAIL_ACTIVITY } from '../utils/veChatPillFromPath';
 import { QUERY_HISTORY } from './QueryHistoryPage';
 
 const SQL_KEYWORDS = new Set([
@@ -51,6 +52,24 @@ export function QueryDetailPage() {
 
   const [tab, setTab] = useState<'overview' | 'nodes'>('overview');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        STORAGE_KEY_VE_QH_DETAIL_ACTIVITY,
+        row.fullActivityName,
+      );
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        window.sessionStorage.removeItem(STORAGE_KEY_VE_QH_DETAIL_ACTIVITY);
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [row.fullActivityName, row.id]);
 
   const onCopy = async () => {
     try {
@@ -136,6 +155,7 @@ export function QueryDetailPage() {
                     chat.requestOptimizeConfirm({
                       entry: 'message-log',
                       query: row.fullQuery,
+                      contextPill: row.fullActivityName,
                     })
                   }
                   className="btn btn-brand-ghost gap-1.5"

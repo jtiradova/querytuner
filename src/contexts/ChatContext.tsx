@@ -231,6 +231,11 @@ export type OptimizeConfirmRequest = {
   highlightLines?: number[];
   title?: string;
   viewExplainHref?: string;
+  /**
+   * Page context for the Visual Explain chat composer pill (e.g. "Query History").
+   * `null` or "" hides the pill after this modal confirms. Omit for no pill.
+   */
+  contextPill?: string | null;
 };
 
 type ChatContextValue = {
@@ -253,7 +258,8 @@ type ChatContextValue = {
    * Modal “Confirm” on the way to Visual Explain: keeps the current thread,
    * shows “Profiling…” for ~2s, then appends the post–VE analysis message.
    */
-  confirmOptimizeConfirm: () => void;
+  /** Pass the modal payload from `OptimizeConfirmModal` so `contextPill` cannot be lost to ref/state races. */
+  confirmOptimizeConfirm: (payload?: OptimizeConfirmRequest | null) => void;
   /** @deprecated Prefer requestOptimizeConfirm — still used by legacy threads. */
   startOptimize: (args: {
     query: string;
@@ -335,6 +341,20 @@ type ChatContextValue = {
    * post–Visual Explain analysis (no confirmation modal).
    */
   openVisualExplainOptimizeChat: () => void;
+  /**
+   * Page-origin label shown in the Ask panel composer on Visual Explain (set
+   * when confirming Optimize from a page, or cleared when not applicable).
+   */
+  visualExplainChatPill: string | null;
+  setVisualExplainChatPill: (label: string | null) => void;
+  /**
+   * When true, the Visual Explain composer hides the context pill entirely
+   * (e.g. Optimize from the VE header, or sidebar re-click on Visual Explain).
+   */
+  veComposerPillSuppressed: boolean;
+  /** Hide VE composer pill until the user leaves Visual Explain or sets a new pill. */
+  suppressVeComposerPill: () => void;
+  clearVeComposerPillSuppress: () => void;
   /** When true, the chat panel takes the entire content area instead of the
    *  fixed 360px right column. */
   expanded: boolean;
@@ -365,6 +385,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const toggleExpanded = useCallback(() => setExpanded((e) => !e), []);
   const [optimizeConfirmRequest, setOptimizeConfirmRequest] =
     useState<OptimizeConfirmRequest | null>(null);
+  /** Latest modal payload so `confirmOptimizeConfirm` can read `contextPill` synchronously. */
+  const pendingOptimizeModalRef = useRef<OptimizeConfirmRequest | null>(null);
+  const [visualExplainChatPill, setVisualExplainChatPillState] = useState<
+    string | null
+  >(null);
+  const [veComposerPillSuppressed, setVeComposerPillSuppressed] =
+    useState(false);
+
+  const setVisualExplainChatPill = useCallback((label: string | null) => {
+    setVeComposerPillSuppressed(false);
+    setVisualExplainChatPillState(label);
+  }, []);
+
+  const suppressVeComposerPill = useCallback(() => {
+    setVeComposerPillSuppressed(true);
+    setVisualExplainChatPillState(null);
+  }, []);
+
+  const clearVeComposerPillSuppress = useCallback(() => {
+    setVeComposerPillSuppressed(false);
+  }, []);
   const runTimers = useRef<number[]>([]);
   /** Pending Visual Explain handoff: remove profiling spinner + show analysis. */
   const veProfilingTimerRef = useRef<number | null>(null);
@@ -420,6 +461,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setMessages([]);
     setEmptyEditorOptimize(null);
     setOptimizeConfirmRequest(null);
+    pendingOptimizeModalRef.current = null;
+    setVisualExplainChatPill(null);
     setView('thread');
     setExpanded(false);
   }, [clearVeProfilingTimer]);
@@ -437,6 +480,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setMessages([]);
     setEmptyEditorOptimize(null);
     setOptimizeConfirmRequest(null);
+    pendingOptimizeModalRef.current = null;
+    setVisualExplainChatPill(null);
     setView('thread');
     setExpanded(false);
   }, [clearVeProfilingTimer]);
@@ -450,6 +495,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           setMessages([]);
           setEmptyEditorOptimize(null);
           setOptimizeConfirmRequest(null);
+          pendingOptimizeModalRef.current = null;
+          setVisualExplainChatPill(null);
           setView('thread');
           setExpanded(false);
         }
@@ -762,10 +809,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const requestOptimizeConfirm = useCallback<
     ChatContextValue['requestOptimizeConfirm']
   >((args) => {
+    pendingOptimizeModalRef.current = args;
     setOptimizeConfirmRequest(args);
   }, []);
 
   const cancelOptimizeConfirm = useCallback(() => {
+    pendingOptimizeModalRef.current = null;
     setOptimizeConfirmRequest(null);
   }, []);
 
@@ -774,6 +823,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     runTimers.current = [];
     clearVeProfilingTimer();
     setOptimizeConfirmRequest(null);
+    pendingOptimizeModalRef.current = null;
+    suppressVeComposerPill();
     setEmptyEditorOptimize(null);
     setView('thread');
     setExpanded(false);
@@ -784,10 +835,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         kind: 'post-ve-analysis',
       },
     ]);
-  }, [clearVeProfilingTimer]);
+  }, [clearVeProfilingTimer, suppressVeComposerPill]);
 
-  const confirmOptimizeConfirm = useCallback(() => {
+  const confirmOptimizeConfirm = useCallback(
+    (payloadFromModal?: OptimizeConfirmRequest | null) => {
+    const pending =
+      payloadFromModal ?? pendingOptimizeModalRef.current;
+    pendingOptimizeModalRef.current = null;
     setOptimizeConfirmRequest(null);
+    const raw = pending?.contextPill;
+    const pill =
+      raw === undefined || raw === null || String(raw).trim() === ''
+        ? null
+        : String(raw).trim();
+    setVisualExplainChatPill(pill);
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
     clearVeProfilingTimer();
@@ -838,7 +899,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     navigate('/editor/visual-explain');
-  }, [clearVeProfilingTimer, navigate]);
+  },
+  [clearVeProfilingTimer, navigate, setVisualExplainChatPill],
+);
 
   const confirmRun = useCallback<ChatContextValue['confirmRun']>((viewExplainHref) => {
     // Mark last optimize-prompt as resolved, then append the running spinner.
@@ -1068,6 +1131,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       optimizeConfirmRequest,
       cancelOptimizeConfirm,
       openVisualExplainOptimizeChat,
+      visualExplainChatPill,
+      setVisualExplainChatPill,
+      veComposerPillSuppressed,
+      suppressVeComposerPill,
+      clearVeComposerPillSuppress,
       confirmOptimizeConfirm,
       startOptimize,
       startMessageLogOptimize,
@@ -1099,6 +1167,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       messages,
       emptyEditorOptimize,
       agentId,
+      visualExplainChatPill,
       setAgent,
       view,
       expanded,
@@ -1111,6 +1180,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       optimizeConfirmRequest,
       cancelOptimizeConfirm,
       openVisualExplainOptimizeChat,
+      setVisualExplainChatPill,
+      veComposerPillSuppressed,
+      suppressVeComposerPill,
+      clearVeComposerPillSuppress,
       confirmOptimizeConfirm,
       startOptimize,
       startMessageLogOptimize,

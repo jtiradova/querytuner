@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icon } from './Icon';
+import { SqlTabContextAccentBar, SqlTabContextChipRow } from './SqlTabContextChipRow';
 import { PostVeAnalysisMessage } from './PostVeAnalysisMessage';
 import { VeSqlGuidanceMessage } from './VeSqlGuidanceMessage';
 import { QueryTunerEmptyIntroMessage } from './QueryTunerEmptyIntroMessage';
@@ -11,6 +12,8 @@ import type {
   ChatMessage,
   EmptyEditorOptimizePhase,
 } from '../contexts/ChatContext';
+import { resolveVeChatHandoffPill } from '../utils/veChatPillFromPath';
+import { useEditorWorkspace } from '../contexts/EditorWorkspaceContext';
 
 const DEFAULT_OPTIMIZE_QUERY = `WHERE customer_id IN (
     SELECT id FROM customers
@@ -23,6 +26,7 @@ const DEFAULT_OPTIMIZE_QUERY = `WHERE customer_id IN (
  *
  * Fixed width column (360px) mounted to the right of the main page content
  * when `chat.isOpen`. Shows agent + user messages and a bottom composer.
+ * SQL tab context chip appears on Visual Explain and Query Tuner (`/editor/query`).
  */
 function isWhatToDoInSqlQuestion(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -41,9 +45,12 @@ export function ChatPanel() {
   const chat = useChat();
   const navigate = useNavigate();
   const location = useLocation();
+  const { snapshot: workspaceSnapshot } = useEditorWorkspace();
   const [composerValue, setComposerValue] = useState('');
   const [fileDragOver, setFileDragOver] = useState(false);
   const [jsonPasteHint, setJsonPasteHint] = useState(false);
+  /** Dismiss page-context pill (Visual Explain composer); resets when pill label changes. */
+  const [vePagePillDismissed, setVePagePillDismissed] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -67,6 +74,41 @@ export function ChatPanel() {
     chat.messages.length === 0 || welcomeAloneThread;
   const onVisualExplainRoute =
     location.pathname.includes('/editor/visual-explain');
+  const onQueryTunerRoute = location.pathname === '/editor/query';
+  /** SQL tab context chip in the composer (Figma 1058-135462): VE + Query Tuner after round-trips. */
+  const showSqlTabContextInComposer =
+    (onVisualExplainRoute || onQueryTunerRoute) &&
+    !chat.veComposerPillSuppressed;
+
+  const sqlTabPillFallback = useMemo(() => {
+    const tid = workspaceSnapshot.activeTabId;
+    if (tid === 'my-files') return null;
+    const tab = workspaceSnapshot.tabs.find((t) => t.id === tid);
+    return tab && tab.id !== 'my-files' ? tab.label : null;
+  }, [workspaceSnapshot.activeTabId, workspaceSnapshot.tabs]);
+
+  /** Explicit pill (modal / link) or active SQL tab name; hidden if suppressed. */
+  const composerSqlContextLabel = showSqlTabContextInComposer
+    ? (chat.visualExplainChatPill?.trim() || sqlTabPillFallback || null)
+    : null;
+
+  /** SQL tab / VE handoff label — stays visible when a profile JSON is staged (file chip is separate). */
+  const showComposerSqlContextChip =
+    showSqlTabContextInComposer &&
+    Boolean(composerSqlContextLabel) &&
+    !vePagePillDismissed;
+
+  useEffect(() => {
+    setVePagePillDismissed(false);
+  }, [composerSqlContextLabel]);
+
+  const clearVeComposerPillSuppress = chat.clearVeComposerPillSuppress;
+  useEffect(() => {
+    if (!location.pathname.includes('/editor/visual-explain')) {
+      clearVeComposerPillSuppress();
+    }
+  }, [location.pathname, clearVeComposerPillSuppress]);
+
   const canSendPastedOrComposer =
     (inProfileComposer &&
       (Boolean(flow?.file) || composerValue.trim().length > 0)) ||
@@ -152,6 +194,9 @@ export function ChatPanel() {
     chat.requestOptimizeConfirm({
       entry: 'editor',
       query: q,
+      contextPill: onVisualExplainRoute
+        ? null
+        : resolveVeChatHandoffPill(location.pathname, workspaceSnapshot),
     });
     setComposerValue('');
     setJsonPasteHint(false);
@@ -299,6 +344,20 @@ export function ChatPanel() {
                   key={m.id}
                   message={m}
                   onOpenLink={(href, messageId) => {
+                    if (href.includes('/editor/visual-explain')) {
+                      let pill: string | null = null;
+                      if (onVisualExplainRoute) {
+                        pill = null;
+                      } else if (inProfileComposer) {
+                        pill = null;
+                      } else {
+                        pill = resolveVeChatHandoffPill(
+                          location.pathname,
+                          workspaceSnapshot,
+                        );
+                      }
+                      chat.setVisualExplainChatPill(pill);
+                    }
                     if (messageId) chat.prepareChatForVisualExplain(messageId);
                     navigate(href);
                   }}
@@ -335,43 +394,62 @@ export function ChatPanel() {
           }`}
         >
           {flow?.file ? (
-            /* Figma 1016-87229: chip + hint inside composer (no large textarea) */
-            <div className="flex flex-col gap-2 px-4 pt-4 pb-2">
-              <div className="flex items-stretch rounded border border-border-default bg-surface-2 p-1 gap-0">
-                <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1">
-                  <Icon
-                    name="file-code"
-                    className="text-[12px] shrink-0 text-text-mid"
-                    aria-hidden
-                  />
-                  <span
-                    className="truncate text-sm font-normal text-text-primary"
-                    style={{ fontFamily: 'Roboto, sans-serif' }}
-                    title={flow.file.name}
-                  >
-                    {flow.file.name}
-                  </span>
+            <>
+              {/* SQL / VE context stays visible; file row is the payload to send (Figma 1016-87229). */}
+              {showComposerSqlContextChip && composerSqlContextLabel ? (
+                <div className="flex gap-2.5 items-start px-4 pt-4 pb-2">
+                  <SqlTabContextAccentBar minHeightClass="min-h-[22px]" />
+                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                    <SqlTabContextChipRow
+                      label={composerSqlContextLabel}
+                      onDismiss={() => setVePagePillDismissed(true)}
+                    />
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  className="btn-icon shrink-0 self-start"
-                  aria-label="Remove file"
-                  title="Remove file"
-                  onClick={() => {
-                    chat.clearStagedProfileFile();
-                    setJsonPasteHint(false);
-                  }}
-                >
-                  <Icon name="xmark" className="text-[12px]" />
-                </button>
-              </div>
-              <p
-                className="text-sm font-normal text-text-secondary m-0"
-                style={{ fontFamily: 'Roboto, sans-serif' }}
+              ) : null}
+              <div
+                className={`flex flex-col gap-2 px-4 pb-2 ${
+                  showComposerSqlContextChip && composerSqlContextLabel
+                    ? 'pt-0'
+                    : 'pt-4'
+                }`}
               >
-                Press Enter to analyze
-              </p>
-            </div>
+                <div className="flex items-stretch rounded border border-border-default bg-surface-2 p-1 gap-0">
+                  <div className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1">
+                    <Icon
+                      name="file-code"
+                      className="text-[12px] shrink-0 text-text-mid"
+                      aria-hidden
+                    />
+                    <span
+                      className="truncate text-sm font-normal text-text-primary"
+                      style={{ fontFamily: 'Roboto, sans-serif' }}
+                      title={flow.file.name}
+                    >
+                      {flow.file.name}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-icon shrink-0 self-start"
+                    aria-label="Remove file"
+                    title="Remove file"
+                    onClick={() => {
+                      chat.clearStagedProfileFile();
+                      setJsonPasteHint(false);
+                    }}
+                  >
+                    <Icon name="xmark" className="text-[12px]" />
+                  </button>
+                </div>
+                <p
+                  className="text-sm font-normal text-text-secondary m-0"
+                  style={{ fontFamily: 'Roboto, sans-serif' }}
+                >
+                  Press Enter to analyze
+                </p>
+              </div>
+            </>
           ) : (
             <>
               {jsonPasteHint && inProfileComposer && (
@@ -383,26 +461,52 @@ export function ChatPanel() {
                   Send.
                 </p>
               )}
-              <textarea
-                ref={composerTextareaRef}
-                value={composerValue}
-                onChange={(e) => setComposerValue(e.target.value)}
-                placeholder={
-                  inProfileComposer && jsonPasteHint
-                    ? 'Paste Query Debug Profile JSON here…'
-                    : onVisualExplainRoute
-                      ? 'Try: What to do in SQL? — then press Send or Enter'
-                      : 'Paste your SQL query or upload a JSON file...'
-                }
-                rows={2}
-                className="resize-none bg-transparent outline-none text-sm text-text-primary placeholder:text-text-low px-3 pt-2 pb-1 leading-relaxed w-full"
-                style={{ fontFamily: 'Roboto, sans-serif' }}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Enter' || e.shiftKey) return;
-                  e.preventDefault();
-                  submitComposer();
-                }}
-              />
+              {showComposerSqlContextChip && composerSqlContextLabel ? (
+                <div className="flex gap-2.5 items-start px-4 pt-4 pb-0">
+                  <SqlTabContextAccentBar minHeightClass="min-h-[32px]" />
+                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                    <SqlTabContextChipRow
+                      label={composerSqlContextLabel}
+                      onDismiss={() => setVePagePillDismissed(true)}
+                    />
+                    <textarea
+                      ref={composerTextareaRef}
+                      value={composerValue}
+                      onChange={(e) => setComposerValue(e.target.value)}
+                      placeholder="Paste your SQL query or describe your issue…"
+                      rows={2}
+                      className="resize-none bg-transparent px-0 pt-0 pb-1 text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary w-full"
+                      style={{ fontFamily: 'Roboto, sans-serif' }}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' || e.shiftKey) return;
+                        e.preventDefault();
+                        submitComposer();
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <textarea
+                  ref={composerTextareaRef}
+                  value={composerValue}
+                  onChange={(e) => setComposerValue(e.target.value)}
+                  placeholder={
+                    inProfileComposer && jsonPasteHint
+                      ? 'Paste Query Debug Profile JSON here…'
+                      : onVisualExplainRoute
+                        ? 'Try: What to do in SQL? — then press Send or Enter'
+                        : 'Paste your SQL query or upload a JSON file...'
+                  }
+                  rows={2}
+                  className="resize-none bg-transparent outline-none text-sm text-text-primary placeholder:text-text-low px-3 pt-2 pb-1 leading-relaxed w-full"
+                  style={{ fontFamily: 'Roboto, sans-serif' }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' || e.shiftKey) return;
+                    e.preventDefault();
+                    submitComposer();
+                  }}
+                />
+              )}
               {jsonPasteHint && inProfileComposer && (
                 <p
                   className="text-xs text-text-secondary px-3 pb-1 pt-0"

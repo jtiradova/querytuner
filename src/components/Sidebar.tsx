@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Icon } from './Icon';
+import { useChat } from '../contexts/ChatContext';
 
 type NavChild = {
   label: string;
   to?: string;
   badge?: string;
   match?: (pathname: string) => boolean;
+  /** Clear Visual Explain page-context chat pill when clicking while already on this route. */
+  clearVeChatPillIfSameRoute?: boolean;
 };
 
 type NavItem = {
@@ -63,6 +66,7 @@ const NAV_ITEMS: NavItem[] = [
         label: 'Visual Explain',
         to: '/editor/visual-explain',
         match: (p) => p.startsWith('/editor/visual-explain'),
+        clearVeChatPillIfSameRoute: true,
       },
       {
         label: 'Query History',
@@ -94,6 +98,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
 function ExpandedSidebar({ onToggle }: { onToggle: () => void }) {
   const location = useLocation();
+  const chat = useChat();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const toggleSection = (id: string) =>
@@ -194,7 +199,20 @@ function ExpandedSidebar({ onToggle }: { onToggle: () => void }) {
 
                     if (child.to) {
                       return (
-                        <NavLink key={child.label} to={child.to} className={className}>
+                        <NavLink
+                          key={child.label}
+                          to={child.to}
+                          className={className}
+                          onClick={() => {
+                            if (
+                              child.clearVeChatPillIfSameRoute &&
+                              child.to &&
+                              location.pathname.startsWith(child.to)
+                            ) {
+                              chat.suppressVeComposerPill();
+                            }
+                          }}
+                        >
                           {inner}
                         </NavLink>
                       );

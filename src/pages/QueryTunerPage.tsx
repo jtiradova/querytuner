@@ -168,6 +168,11 @@ export function QueryTunerPage() {
   const chat = useChat();
 
   const hasSqlTab = snapshot.tabs.some((t) => t.id !== 'my-files');
+  const editorSqlContextLabel =
+    activeId !== 'my-files' && hasSqlTab
+      ? (snapshot.tabs.find((t) => t.id === activeId)?.label ?? null)
+      : null;
+
   useLayoutEffect(() => {
     if (!hasSqlTab) {
       startSqlSession();
@@ -280,6 +285,7 @@ export function QueryTunerPage() {
                   chat.requestOptimizeConfirm({
                     entry: 'editor',
                     query: SELECTED_SUBQUERY_TEXT,
+                    contextPill: editorSqlContextLabel,
                   });
                 } else {
                   chat.startEmptyEditorOptimize();
@@ -409,6 +415,7 @@ export function QueryTunerPage() {
                   chat.requestOptimizeConfirm({
                     entry: 'message-log',
                     query,
+                    contextPill: editorSqlContextLabel,
                   })
                 }
               />

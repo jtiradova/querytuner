@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icon';
 import { AppShell } from '../components/AppShell';
 import { useChat } from '../contexts/ChatContext';
+import { useEditorWorkspace } from '../contexts/EditorWorkspaceContext';
 
 /**
  * Visual Explain page — plan tree + Summary / Details (Figma 1016-86425).
@@ -97,9 +98,14 @@ const OPERATORS: OperatorRow[] = [
 export function VisualExplainPage() {
   const chat = useChat();
   const navigate = useNavigate();
+  const { snapshot } = useEditorWorkspace();
   const [tab, setTab] = useState<'actual' | 'estimated'>('actual');
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
+
+  useLayoutEffect(() => {
+    chat.open();
+  }, [chat.open]);
 
   return (
     <AppShell askLabel="Ask Singlestore">
@@ -132,7 +138,14 @@ export function VisualExplainPage() {
               className="btn btn-secondary h-9 px-3 text-sm"
               style={{ fontFamily: 'Roboto, sans-serif' }}
               onClick={() => {
-                // Preserve workspace tabs + active tab from before VE; do not open a new tab.
+                const tid = snapshot.activeTabId;
+                const tab =
+                  tid !== 'my-files'
+                    ? snapshot.tabs.find((t) => t.id === tid)
+                    : undefined;
+                if (tab?.label) {
+                  chat.setVisualExplainChatPill(tab.label);
+                }
                 navigate('/editor/query', { replace: true });
               }}
             >
