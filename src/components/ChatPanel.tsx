@@ -384,14 +384,12 @@ export function ChatPanel() {
             <>
               {/* SQL / VE context stays visible; file row is the payload to send (Figma 1016-87229). */}
               {showComposerSqlContextChip && composerSqlContextLabel ? (
-                <div className="flex gap-2.5 items-start px-4 pt-4 pb-2">
-                  <SqlTabContextAccentBar minHeightClass="min-h-[22px]" />
-                  <div className="flex min-w-0 flex-1 flex-col gap-2">
-                    <SqlTabContextChipRow
-                      label={composerSqlContextLabel}
-                      onDismiss={() => setVePagePillDismissed(true)}
-                    />
-                  </div>
+                <div className="flex gap-2 items-stretch px-4 pt-4 pb-2 min-w-0">
+                  <SqlTabContextAccentBar />
+                  <SqlTabContextChipRow
+                    label={composerSqlContextLabel}
+                    onDismiss={() => setVePagePillDismissed(true)}
+                  />
                 </div>
               ) : null}
               <div
@@ -449,28 +447,28 @@ export function ChatPanel() {
                 </p>
               )}
               {showComposerSqlContextChip && composerSqlContextLabel ? (
-                <div className="flex gap-2.5 items-start px-4 pt-4 pb-0">
-                  <SqlTabContextAccentBar minHeightClass="min-h-[32px]" />
-                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                <div className="flex flex-col gap-2 px-4 pt-4 pb-0 min-w-0">
+                  <div className="flex gap-2 items-stretch min-w-0">
+                    <SqlTabContextAccentBar />
                     <SqlTabContextChipRow
                       label={composerSqlContextLabel}
                       onDismiss={() => setVePagePillDismissed(true)}
                     />
-                    <textarea
-                      ref={composerTextareaRef}
-                      value={composerValue}
-                      onChange={(e) => setComposerValue(e.target.value)}
-                      placeholder="Paste your SQL query or describe your issue…"
-                      rows={2}
-                      className="resize-none bg-transparent px-0 pt-0 pb-1 text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary w-full"
-                      style={{ fontFamily: 'Roboto, sans-serif' }}
-                      onKeyDown={(e) => {
-                        if (e.key !== 'Enter' || e.shiftKey) return;
-                        e.preventDefault();
-                        submitComposer();
-                      }}
-                    />
                   </div>
+                  <textarea
+                    ref={composerTextareaRef}
+                    value={composerValue}
+                    onChange={(e) => setComposerValue(e.target.value)}
+                    placeholder="Paste your SQL query or describe your issue…"
+                    rows={2}
+                    className="resize-none bg-transparent px-0 pt-0 pb-1 text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary w-full"
+                    style={{ fontFamily: 'Roboto, sans-serif' }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' || e.shiftKey) return;
+                      e.preventDefault();
+                      submitComposer();
+                    }}
+                  />
                 </div>
               ) : (
                 <textarea
