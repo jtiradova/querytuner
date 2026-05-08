@@ -82,11 +82,14 @@ export function ChatPanel() {
   }, [workspaceSnapshot.activeTabId, workspaceSnapshot.tabs]);
 
   /**
-   * Active SQL tab label wins so the chip tracks untitled-1 vs untitled-2 (etc.).
-   * Handoff / modal pill is used only when there is no SQL tab context (e.g. My Files).
+   * Query Tuner: SQL tab label wins (untitled-1 vs untitled-2).
+   * Visual Explain: modal / handoff pill wins so Optimize from Query History keeps
+   * the activity chip after navigation; SQL tab is fallback only.
    */
   const composerSqlContextLabel = showSqlTabContextInComposer
-    ? sqlTabPillFallback || chat.visualExplainChatPill?.trim() || null
+    ? onVisualExplainRoute
+      ? chat.visualExplainChatPill?.trim() || sqlTabPillFallback || null
+      : sqlTabPillFallback || chat.visualExplainChatPill?.trim() || null
     : null;
 
   /** SQL tab / VE handoff label — stays visible when a profile JSON is staged (file chip is separate). */
