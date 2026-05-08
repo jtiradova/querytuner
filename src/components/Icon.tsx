@@ -53,6 +53,7 @@ import {
   Search,
   Send,
   Server,
+  SquarePen,
   Settings,
   Sparkles,
   SquareTerminal,
@@ -94,6 +95,9 @@ const ICONS: IconMap = {
 
   // Controls
   plus: Plus,
+  /** Figma Query Tuner “new chat” (1016-134720) — compose / edit glyph */
+  edit: SquarePen,
+  'square-pen': SquarePen,
   'chevron-down': ChevronDown,
   'chevron-right': ChevronRight,
   'chevron-left': ChevronLeft,

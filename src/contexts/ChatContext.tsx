@@ -458,7 +458,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     runTimers.current.forEach((t) => window.clearTimeout(t));
     runTimers.current = [];
     clearVeProfilingTimer();
-    setMessages([]);
+    // Same landing as Query Tuner welcome (Figma 1149-137310), not an empty thread.
+    setMessages([
+      { id: `welcome-${Date.now()}`, kind: 'query-tuner-welcome' },
+    ]);
     setEmptyEditorOptimize(null);
     setOptimizeConfirmRequest(null);
     pendingOptimizeModalRef.current = null;

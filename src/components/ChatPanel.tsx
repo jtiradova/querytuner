@@ -81,9 +81,12 @@ export function ChatPanel() {
     return tab && tab.id !== 'my-files' ? tab.label : null;
   }, [workspaceSnapshot.activeTabId, workspaceSnapshot.tabs]);
 
-  /** Explicit pill (modal / link) or active SQL tab name; hidden if suppressed. */
+  /**
+   * Active SQL tab label wins so the chip tracks untitled-1 vs untitled-2 (etc.).
+   * Handoff / modal pill is used only when there is no SQL tab context (e.g. My Files).
+   */
   const composerSqlContextLabel = showSqlTabContextInComposer
-    ? (chat.visualExplainChatPill?.trim() || sqlTabPillFallback || null)
+    ? sqlTabPillFallback || chat.visualExplainChatPill?.trim() || null
     : null;
 
   /** SQL tab / VE handoff label — stays visible when a profile JSON is staged (file chip is separate). */
@@ -244,7 +247,7 @@ export function ChatPanel() {
             onClick={chat.clear}
             title="New chat"
           >
-            <Icon name="plus" className="text-[12px]" />
+            <Icon name="edit" className="text-[14px] text-text-mid" />
           </button>
           <button
             type="button"
@@ -814,20 +817,20 @@ const WELCOME_CAPABILITY_ROWS: ReadonlyArray<{
   {
     title: 'Profile a query',
     description:
-      'paste a SQL SELECT or upload a JSON file to debug profile automatically.',
+      'paste a SQL SELECT or UPLOAD a JSON file to debug profile automatically.',
     icon: 'search',
   },
   {
     title: 'Analyze bottlenecks',
     description:
       'identify repartitions, broadcasts, skew, spills, and more.',
-    icon: 'network',
+    icon: 'bar-chart',
   },
   {
     title: 'Recommend schema changes',
     description:
       'shard keys, sort keys, projections, hash indexes, reference tables.',
-    icon: 'table',
+    icon: 'tools',
   },
   {
     title: 'Generate & validate DDL',
@@ -836,51 +839,48 @@ const WELCOME_CAPABILITY_ROWS: ReadonlyArray<{
   },
 ];
 
-/** Flow 2 — Ask SingleStore welcome (Figma 1016-89777). Static text only; no buttons. */
+/** Query Tuner generic landing (Figma 1149-137310). Shown on Ask welcome + New chat. */
 function QueryTunerWelcomeMessage() {
   return (
     <div
-      className="flex flex-col gap-8 self-stretch w-full max-w-full py-1"
+      className="flex flex-col gap-[52px] items-center justify-center self-stretch w-full max-w-full px-4 py-8"
       style={{ fontFamily: 'Roboto, sans-serif' }}
     >
-      <div className="flex flex-col gap-6 w-full">
-        <div className="flex flex-col gap-4 items-center text-center w-full">
-          <div className="flex items-center justify-center gap-3">
-            <Icon name="code" className="text-[18px] text-text-primary shrink-0" />
-            <h2
-              className="text-xl font-medium text-text-primary leading-tight tracking-wide"
-              style={{ fontFamily: 'Roboto, sans-serif' }}
-            >
-              Performance Tuning
-            </h2>
-          </div>
-          <p className="text-base font-normal text-text-secondary leading-normal tracking-wide m-0 max-w-[320px]">
-            I can help you analyze and optimize your SingleStore queries.
-            Here&apos;s what I can do for you:
-          </p>
+      <div className="flex flex-col gap-4 items-center text-center w-full">
+        <div className="flex items-center justify-center gap-4">
+          <Icon name="code" className="text-[18px] text-text-primary shrink-0" />
+          <h2
+            className="text-xl font-medium text-text-primary leading-tight tracking-[0.2px] m-0"
+            style={{ fontFamily: 'Roboto, sans-serif' }}
+          >
+            Performance Tuning
+          </h2>
         </div>
-        <ul className="flex flex-col gap-4 w-full list-none p-0 m-0 items-stretch text-left">
-          {WELCOME_CAPABILITY_ROWS.map((row) => (
-            <li
-              key={row.title}
-              className="flex items-start gap-3 text-sm leading-relaxed tracking-wide text-left"
-            >
-              <Icon
-                name={row.icon}
-                className="text-[16px] shrink-0 text-text-secondary mt-0.5"
-                aria-hidden
-              />
-              <span className="min-w-0">
-                <span className="font-bold text-text-primary">{row.title}</span>
-                <span className="font-normal text-text-secondary">
-                  {' '}
-                  - {row.description}
-                </span>
-              </span>
-            </li>
-          ))}
-        </ul>
+        <p className="text-base font-normal text-text-secondary leading-[1.5] tracking-[0.32px] m-0 max-w-[min(100%,420px)]">
+          I can help you analyze and optimize your SingleStore queries.
+        </p>
       </div>
+      <ul className="flex flex-col gap-2 w-full list-none p-0 m-0 items-stretch text-left">
+        {WELCOME_CAPABILITY_ROWS.map((row) => (
+          <li
+            key={row.title}
+            className="flex items-start gap-2.5 text-sm leading-[1.5] tracking-[0.28px] text-left"
+          >
+            <Icon
+              name={row.icon}
+              className="text-[14px] shrink-0 text-text-primary mt-px"
+              aria-hidden
+            />
+            <span className="min-w-0 text-text-primary">
+              <span className="font-medium">{row.title}</span>
+              <span className="font-normal text-text-secondary">
+                {' '}
+                - {row.description}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -1227,18 +1227,101 @@ type HistoryChat = {
   name: string;
   /** Used to pick the row icon (mirrors the agent it was created with). */
   agent: AgentId;
+  /** Last activity; drives “Yesterday” / “Thu” / “May 20” style labels. */
+  lastActivityAt: Date;
 };
 
-const SAMPLE_HISTORY: { today: HistoryChat[]; previous: HistoryChat[] } = {
-  today: [
-    { id: 'h-1', name: 'Select id from customers', agent: 'query-tuner' },
-    { id: 'h-2', name: 'Chat name', agent: 'query-tuner' },
-  ],
-  previous: [
-    { id: 'h-3', name: 'Chat name', agent: 'data-migration' },
-    { id: 'h-4', name: 'Chat name', agent: 'sqlr-assistant' },
-  ],
-};
+function stripTime(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function startOfWeekSunday(d: Date): Date {
+  const x = stripTime(d);
+  x.setDate(x.getDate() - x.getDay());
+  return x;
+}
+
+/**
+ * Secondary line for history rows: time today, Yesterday, weekday in the same
+ * calendar week, then short date / year.
+ */
+function formatHistoryActivityLabel(lastActive: Date, now = new Date()): string {
+  const sodToday = stripTime(now).getTime();
+  const sodChat = stripTime(lastActive).getTime();
+  const diffDays = Math.round((sodToday - sodChat) / 86400000);
+
+  if (diffDays <= 0) {
+    return lastActive.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+  if (diffDays === 1) return 'Yesterday';
+
+  const sameCalendarWeek =
+    startOfWeekSunday(lastActive).getTime() === startOfWeekSunday(now).getTime();
+  if (sameCalendarWeek && diffDays >= 2) {
+    return lastActive.toLocaleDateString('en-US', { weekday: 'short' });
+  }
+
+  if (lastActive.getFullYear() === now.getFullYear()) {
+    return lastActive.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+  return lastActive.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function buildSampleHistory(): { today: HistoryChat[]; previous: HistoryChat[] } {
+  const now = new Date();
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 3600000);
+  const daysAgoAt = (d: number, hour = 10) => {
+    const x = new Date(now);
+    x.setDate(x.getDate() - d);
+    x.setHours(hour, 0, 0, 0);
+    return x;
+  };
+  return {
+    today: [
+      {
+        id: 'h-1',
+        name: 'Select id from customers',
+        agent: 'query-tuner',
+        lastActivityAt: hoursAgo(2),
+      },
+      {
+        id: 'h-2',
+        name: 'Chat name',
+        agent: 'query-tuner',
+        lastActivityAt: hoursAgo(0.5),
+      },
+    ],
+    previous: [
+      {
+        id: 'h-3',
+        name: 'Chat name',
+        agent: 'data-migration',
+        lastActivityAt: daysAgoAt(1),
+      },
+      {
+        id: 'h-4',
+        name: 'Chat name',
+        agent: 'sqlr-assistant',
+        lastActivityAt: daysAgoAt(3),
+      },
+      {
+        id: 'h-5',
+        name: 'Older tune session',
+        agent: 'query-tuner',
+        lastActivityAt: daysAgoAt(40),
+      },
+    ],
+  };
+}
 
 /**
  * Replaces the messages list when the user clicks the history button in the
@@ -1253,7 +1336,7 @@ function HistoryPanel({
   onPickChat: (chat: HistoryChat) => void;
   onClose: () => void;
 }) {
-  const [chats, setChats] = useState(SAMPLE_HISTORY);
+  const [chats, setChats] = useState(buildSampleHistory);
 
   const remove = (id: string) =>
     setChats((c) => ({
@@ -1341,6 +1424,7 @@ function HistoryRow({
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
+  const dateLabel = formatHistoryActivityLabel(chat.lastActivityAt);
 
   // Close menu on outside click.
   useEffect(() => {
@@ -1353,33 +1437,44 @@ function HistoryRow({
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [menuOpen]);
 
-  const showEllipsis = hovered || menuOpen;
-
   return (
     <div
       ref={rowRef}
-      className={`relative flex items-center gap-1 px-4 py-1 cursor-pointer ${
+      className={`group relative grid grid-cols-[28px_minmax(0,1fr)_36px] items-start gap-x-2 px-4 py-2 cursor-pointer ${
         hovered || menuOpen ? 'bg-neutral-2' : ''
       }`}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={() => {
+        if (!menuOpen) setHovered(false);
+      }}
       onClick={onPick}
     >
-      <span className="flex items-center justify-center size-6 shrink-0 text-text-mid">
+      <span className="flex items-center justify-center size-6 shrink-0 text-text-mid mt-0.5">
         <Icon name={agentIcon(chat.agent)} className="text-[12px]" />
       </span>
-      <span
-        className="flex-1 min-w-0 truncate text-sm text-text-primary"
-        style={{ fontFamily: 'Roboto, sans-serif' }}
-      >
-        {chat.name}
-      </span>
+      <div className="min-w-0 flex flex-col gap-0.5">
+        <span
+          className="truncate text-sm text-text-primary leading-tight"
+          style={{ fontFamily: 'Roboto, sans-serif' }}
+        >
+          {chat.name}
+        </span>
+        <span
+          className="text-xs text-text-secondary leading-tight truncate"
+          style={{ fontFamily: 'Roboto, sans-serif' }}
+        >
+          {dateLabel}
+        </span>
+      </div>
 
-      {showEllipsis && (
+      <div className="relative flex justify-end pt-0.5">
         <button
           type="button"
-          className="flex items-center justify-center size-6 rounded-sm text-text-mid hover:bg-neutral-3"
+          className={`flex items-center justify-center size-7 rounded-sm text-text-mid hover:bg-neutral-3 transition-opacity ${
+            hovered || menuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+          } group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:opacity-100 focus-visible:pointer-events-auto`}
           aria-label="Chat actions"
+          aria-expanded={menuOpen}
           onClick={(e) => {
             e.stopPropagation();
             setMenuOpen((o) => !o);
@@ -1387,15 +1482,15 @@ function HistoryRow({
         >
           <Icon name="ellipsis" className="text-[12px]" />
         </button>
-      )}
 
-      {menuOpen && (
-        <div
-          className="absolute right-2 top-full z-30 mt-1 w-[140px] bg-white rounded-sm border border-border-default py-1"
-          style={{ boxShadow: '0px 2px 2px rgba(39,43,51,0.25)' }}
-          role="menu"
-          onClick={(e) => e.stopPropagation()}
-        >
+        {menuOpen && (
+          <div
+            className="absolute right-0 bottom-full z-40 mb-1 w-[140px] bg-white rounded-sm border border-border-default py-1"
+            style={{ boxShadow: '0px 2px 2px rgba(39,43,51,0.25)' }}
+            role="menu"
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => setHovered(true)}
+          >
           <button
             type="button"
             role="menuitem"
@@ -1422,8 +1517,9 @@ function HistoryRow({
             <Icon name="trash-can" className="text-[12px]" />
             <span>Delete</span>
           </button>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
